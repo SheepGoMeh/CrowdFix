@@ -11,6 +11,7 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool DedupeSkeletonSyncs = true;
 	public bool TrimCullingClear = true;
 	public bool ShortenAllocatorLock;
+	public bool PoolStagingBlocks;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
 }

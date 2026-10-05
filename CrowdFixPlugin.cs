@@ -20,6 +20,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 	private readonly SkeletonSyncDedupe skeletonSyncDedupe;
 	private readonly CullingClearTrim cullingClearTrim;
 	private readonly AllocatorFreeLock allocatorFreeLock;
+	private readonly StagingPool stagingPool;
 	private readonly WindowSystem windowSystem;
 	private readonly ConfigWindow configWindow;
 
@@ -37,10 +38,11 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.skeletonSyncDedupe = new SkeletonSyncDedupe();
 		this.cullingClearTrim = new CullingClearTrim();
 		this.allocatorFreeLock = new AllocatorFreeLock();
+		this.stagingPool = new StagingPool();
 
 		this.windowSystem = new WindowSystem("CrowdFix");
 		this.configWindow = new ConfigWindow(
-			this.configuration, this.idleNotifierFilter, this.jobWakeChain, this.skeletonSyncDedupe, this.cullingClearTrim, this.allocatorFreeLock,
+			this.configuration, this.idleNotifierFilter, this.jobWakeChain, this.skeletonSyncDedupe, this.cullingClearTrim, this.allocatorFreeLock, this.stagingPool,
 			() => this.settingsPending = true);
 		this.windowSystem.AddWindow(this.configWindow);
 
@@ -65,10 +67,12 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.skeletonSyncDedupe.SetEnabled(this.configuration.DedupeSkeletonSyncs);
 			this.cullingClearTrim.SetEnabled(this.configuration.TrimCullingClear);
 			this.allocatorFreeLock.SetEnabled(this.configuration.ShortenAllocatorLock);
+			this.stagingPool.SetEnabled(this.configuration.PoolStagingBlocks);
 
-			// The job pool may not exist yet right after login; keep retrying until it does.
-			this.settingsPending = this.configuration.ChainWorkerWakeups && this.jobWakeChain.Available &&
-			                       !this.jobWakeChain.Enabled;
+			// The job pool and the graphics allocator may not exist yet right after login; keep retrying until they do.
+			this.settingsPending =
+				(this.configuration.ChainWorkerWakeups && this.jobWakeChain.Available && !this.jobWakeChain.Enabled) ||
+				(this.configuration.PoolStagingBlocks && this.stagingPool.Available && !this.stagingPool.Enabled);
 		}
 
 		this.idleNotifierFilter.Update();
@@ -94,6 +98,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 		{
 			this.idleNotifierFilter.Dispose();
 			this.cullingClearTrim.Dispose();
+			this.stagingPool.Dispose();
 		}).Wait();
 		this.jobWakeChain.Dispose();
 		this.skeletonSyncDedupe.Dispose();

@@ -14,6 +14,7 @@ public class ConfigWindow(
 	SkeletonSyncDedupe skeletonSyncDedupe,
 	CullingClearTrim cullingClearTrim,
 	AllocatorFreeLock allocatorFreeLock,
+	StagingPool stagingPool,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -48,6 +49,12 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(allocatorFreeLock.Status);
+
+		ImGui.BeginDisabled(!stagingPool.Available);
+		if (ImGui.Checkbox("Pool graphics staging allocations", ref configuration.PoolStagingBlocks))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled($"{stagingPool.Status}, {stagingPool.PooledBlocks} pooled blocks");
 	}
 
 	private void Save()
