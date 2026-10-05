@@ -1,0 +1,10 @@
+{
+  "Author": "SheepGoMeh",
+  "Name": "CrowdFix",
+  "InternalName": "CrowdFix",
+  "Description": "Cuts per-frame engine overhead that causes stutter and low FPS, most noticeable in crowded areas.\nSkips idle GPU resource notifiers, chains job worker wake-ups, drops repeated skeleton pose syncs, trims the culling visibility clear and shortens the graphics allocator lock.\nEach fix can be toggled via /crowdfix",
+  "Punchline": "Smoother frame times by cutting engine overhead.",
+  "Tags": ["Performance", "FPS", "Stutter", "Crowd"],
+  "ApplicableVersion": "any",
+  "IconUrl": "https://raw.githubusercontent.com/SheepGoMeh/CrowdFix/main/images/icon.png"
+}

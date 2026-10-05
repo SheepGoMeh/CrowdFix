@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DALAMUD_HOME: ${{ github.workspace }}/dalamud
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download Dalamud
+        run: |
+          curl -sSfL https://goatcorp.github.io/dalamud-distrib/latest.zip -o dalamud.zip
+          unzip -q dalamud.zip -d "$DALAMUD_HOME"
+
+      - name: Build
+        run: dotnet build -c Release -p:EnableWindowsTargeting=true -p:AssemblyVersion=${GITHUB_REF_NAME#v}
+
+      - name: Generate repo.json
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/latest.zip"
+          jq --arg url "$url" --arg repo "https://github.com/${GITHUB_REPOSITORY}" --argjson now "$(date +%s)" \
+            '[. + {RepoUrl: $repo, DownloadLinkInstall: $url, DownloadLinkUpdate: $url, DownloadLinkTesting: $url, LastUpdate: $now}]' \
+            bin/Release/CrowdFix/CrowdFix.json > repo.json
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bin/Release/CrowdFix/latest.zip
+            repo.json
+          generate_release_notes: true
