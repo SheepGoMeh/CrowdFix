@@ -22,6 +22,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 	private readonly CullingClearTrim cullingClearTrim;
 	private readonly AllocatorFreeLock allocatorFreeLock;
 	private readonly StagingPool stagingPool;
+	private readonly HiddenMinionFreeze hiddenMinionFreeze;
 	private readonly WindowSystem windowSystem;
 	private readonly ConfigWindow configWindow;
 
@@ -40,10 +41,12 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.cullingClearTrim = new CullingClearTrim();
 		this.allocatorFreeLock = new AllocatorFreeLock();
 		this.stagingPool = new StagingPool();
+		this.hiddenMinionFreeze = new HiddenMinionFreeze();
 
 		this.windowSystem = new WindowSystem("CrowdFix");
 		this.configWindow = new ConfigWindow(
 			this.configuration, this.idleNotifierFilter, this.jobWakeChain, this.skeletonSyncDedupe, this.cullingClearTrim, this.allocatorFreeLock, this.stagingPool,
+			this.hiddenMinionFreeze,
 			() => this.settingsPending = true);
 		this.windowSystem.AddWindow(this.configWindow);
 
@@ -69,6 +72,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.cullingClearTrim.SetEnabled(this.configuration.TrimCullingClear);
 			this.allocatorFreeLock.SetEnabled(this.configuration.ShortenAllocatorLock);
 			this.stagingPool.SetEnabled(this.configuration.PoolStagingBlocks);
+			this.hiddenMinionFreeze.SetEnabled(this.configuration.FreezeHiddenMinions);
 
 			// The job pool and the graphics allocator may not exist yet right after login; keep retrying until they do.
 			this.settingsPending =
@@ -100,6 +104,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.jobWakeChain.SetEnabled(false);
 			this.skeletonSyncDedupe.SetEnabled(false);
 			this.allocatorFreeLock.SetEnabled(false);
+			this.hiddenMinionFreeze.SetEnabled(false);
 			this.idleNotifierFilter.Dispose();
 			this.cullingClearTrim.Dispose();
 			this.stagingPool.Dispose();
@@ -110,6 +115,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.jobWakeChain.Dispose();
 		this.skeletonSyncDedupe.Dispose();
 		this.allocatorFreeLock.Dispose();
+		this.hiddenMinionFreeze.Dispose();
 	}
 
 	public void Dispose()

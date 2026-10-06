@@ -15,6 +15,7 @@ public class ConfigWindow(
 	CullingClearTrim cullingClearTrim,
 	AllocatorFreeLock allocatorFreeLock,
 	StagingPool stagingPool,
+	HiddenMinionFreeze hiddenMinionFreeze,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -55,6 +56,12 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled($"{stagingPool.Status}, {stagingPool.PooledBlocks} pooled blocks");
+
+		ImGui.BeginDisabled(!hiddenMinionFreeze.Available);
+		if (ImGui.Checkbox("Freeze hidden minions", ref configuration.FreezeHiddenMinions))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(hiddenMinionFreeze.Status);
 	}
 
 	private void Save()
