@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
@@ -96,10 +97,16 @@ public class CrowdFixPlugin: IDalamudPlugin
 		// The PostTick patch has to be undone on the framework thread.
 		Service.Framework.RunOnFrameworkThread(() =>
 		{
+			this.jobWakeChain.SetEnabled(false);
+			this.skeletonSyncDedupe.SetEnabled(false);
+			this.allocatorFreeLock.SetEnabled(false);
 			this.idleNotifierFilter.Dispose();
 			this.cullingClearTrim.Dispose();
 			this.stagingPool.Dispose();
 		}).Wait();
+
+		// Job and render threads can still be inside a detour; let them leave before the hooks are freed.
+		Thread.Sleep(200);
 		this.jobWakeChain.Dispose();
 		this.skeletonSyncDedupe.Dispose();
 		this.allocatorFreeLock.Dispose();

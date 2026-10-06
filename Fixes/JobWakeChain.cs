@@ -71,6 +71,10 @@ public unsafe class JobWakeChain: IDisposable
 		{
 			this.wakeAllHook!.Disable(); // the stock wake-all takes over immediately
 			this.waitHook!.Disable();
+			// Sleeping workers are still inside WaitDetour; a stock wake-all gets them out before the hook can be freed.
+			if (this.pool != 0)
+				this.wakeAllHook.Original(this.pool);
+
 			this.Status = "Off";
 			return;
 		}
