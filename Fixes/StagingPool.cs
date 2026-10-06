@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -13,8 +12,9 @@ namespace CrowdFix.Fixes;
 /// and a region re-sort) while still holding it, so the draw-building job threads spend about a third of their time
 /// waiting on each other.
 /// This keeps freed blocks of that allocator in power-of-two size buckets and hands them back out, so most
-/// allocations never reach those locks. The allocator's vtable slots are swapped (they are tiny forwarding wrappers);
-/// only blocks this pool allocated are ever bucketed, everything else goes to the original wrappers untouched.
+/// allocations never reach those locks. The allocator's vtable slots are swapped (they are tiny forwarding wrappers).
+/// Every pooled block is a genuine allocation of that allocator: its size class comes from the allocator's own size
+/// query, so blocks still held by the game stay valid for the original Free after the pool is turned off or unloaded.
 /// </summary>
 public unsafe class StagingPool: IDisposable
 {
@@ -24,12 +24,15 @@ public unsafe class StagingPool: IDisposable
 	// Expected wrapper code: Alloc = MOV EAX,1; LOCK XADD [RCX+0x210],EAX; ...  Free = ADD RCX,0x90; MOV RAX,[RCX]; JMP [RAX+0x20]
 	private static readonly byte[] AllocWrapperCode = [0xB8, 0x01, 0x00, 0x00, 0x00, 0xF0, 0x0F, 0xC1, 0x81, 0x10, 0x02, 0x00, 0x00];
 	private static readonly byte[] FreeWrapperCode = [0x48, 0x81, 0xC1, 0x90, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x01, 0x48, 0xFF, 0x60, 0x20];
+	private static readonly byte[] SizeWrapperCode = [0x48, 0x81, 0xC1, 0x90, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x01, 0x48, 0xFF, 0x60, 0x48];
 
 	private const int TerminateSlot = 1;
 	private const int AllocSlot = 2;
-	private const int ReallocSlot = 3;
 	private const int FreeSlot = 4;
+	private const int SizeSlot = 9;
 	private const int AllocCounterOffset = 0x210;
+	private const int DirectMarkerOffset = 0x10;
+	private const ushort DirectMarker = 0xFFFF;
 
 	private const int MinClassShift = 6;   // 64 B
 	private const int MaxClassShift = 16;  // 64 KB
@@ -38,26 +41,23 @@ public unsafe class StagingPool: IDisposable
 
 	private delegate void TerminateDelegate(nint allocator);
 	private delegate nint AllocDelegate(nint allocator, ulong size, ulong alignment);
-	private delegate nint ReallocDelegate(nint allocator, nint block, ulong size, ulong alignment);
 	private delegate void FreeDelegate(nint allocator, nint block);
 
 	[DllImport("kernel32.dll")] private static extern bool VirtualProtect(nint address, nuint size, uint protect, out uint oldProtect);
 
 	private readonly nint* allocatorManager;
 	private readonly Bucket[] buckets = new Bucket[MaxClassShift - MinClassShift + 1];
-	private readonly ConcurrentDictionary<nint, int> owned = new();
 
 	// kept alive for the lifetime of the swapped vtable entries
 	private readonly TerminateDelegate terminateDetour;
 	private readonly AllocDelegate allocDetour;
-	private readonly ReallocDelegate reallocDetour;
 	private readonly FreeDelegate freeDetour;
 
 	private nint* vtable;
 	private nint originalTerminate;
 	private nint originalAlloc;
-	private nint originalRealloc;
 	private nint originalFree;
+	private nint blockSize;
 	private nint target;
 
 	public bool Available { get; }
@@ -84,7 +84,6 @@ public unsafe class StagingPool: IDisposable
 
 		this.terminateDetour = this.TerminateDetour;
 		this.allocDetour = this.AllocDetour;
-		this.reallocDetour = this.ReallocDetour;
 		this.freeDetour = this.FreeDetour;
 
 		try
@@ -125,7 +124,8 @@ public unsafe class StagingPool: IDisposable
 		}
 
 		nint* table = *(nint**)allocator;
-		if (!Matches(table[AllocSlot], AllocWrapperCode) || !Matches(table[FreeSlot], FreeWrapperCode))
+		if (!Matches(table[AllocSlot], AllocWrapperCode) || !Matches(table[FreeSlot], FreeWrapperCode) ||
+		    !Matches(table[SizeSlot], SizeWrapperCode))
 		{
 			this.Status = "Unavailable (unexpected allocator layout)";
 			return;
@@ -134,11 +134,10 @@ public unsafe class StagingPool: IDisposable
 		this.target = allocator;
 		this.originalTerminate = table[TerminateSlot];
 		this.originalAlloc = table[AllocSlot];
-		this.originalRealloc = table[ReallocSlot];
 		this.originalFree = table[FreeSlot];
+		this.blockSize = table[SizeSlot];
 		this.vtable = table;
 		WriteSlot(table, TerminateSlot, Marshal.GetFunctionPointerForDelegate(this.terminateDetour));
-		WriteSlot(table, ReallocSlot, Marshal.GetFunctionPointerForDelegate(this.reallocDetour));
 		WriteSlot(table, FreeSlot, Marshal.GetFunctionPointerForDelegate(this.freeDetour));
 		WriteSlot(table, AllocSlot, Marshal.GetFunctionPointerForDelegate(this.allocDetour));
 		this.Status = "On";
@@ -175,33 +174,28 @@ public unsafe class StagingPool: IDisposable
 			return block;
 		}
 
-		block = original(allocator, 1UL << (sizeClass + MinClassShift), PoolAlignment);
-		if (block != 0)
-			this.owned[block] = sizeClass;
-
-		return block;
+		// Round misses up to the class size so the block comes back to the same class when freed.
+		return original(allocator, 1UL << (sizeClass + MinClassShift), PoolAlignment);
 	}
 
 	private void FreeDetour(nint allocator, nint block)
 	{
-		if (block != 0 && allocator == this.target && this.owned.TryGetValue(block, out int sizeClass))
+		// Blocks the backing allocator handed out directly (marker 0xFFFF at -0x10) have no size in their header.
+		if (block != 0 && allocator == this.target && (block & ((nint)PoolAlignment - 1)) == 0 &&
+		    *(ushort*)(block - DirectMarkerOffset) != DirectMarker)
 		{
-			if (this.buckets[sizeClass].TryPush(block))
-				return;
-
-			this.owned.TryRemove(block, out _);
+			// The allocator's own size query: slab element size from the page header, or the requested size from the
+			// block header. A block goes to the largest class it can hold; past twice the top class it is left alone.
+			ulong size = ((delegate* unmanaged<nint, nint, ulong>)this.blockSize)(allocator, block);
+			if (size >= (1UL << MinClassShift) && size < (2UL << MaxClassShift))
+			{
+				int sizeClass = Math.Min(BitOperations.Log2(size), MaxClassShift) - MinClassShift;
+				if (this.buckets[sizeClass].TryPush(block))
+					return;
+			}
 		}
 
 		((delegate* unmanaged<nint, nint, void>)this.originalFree)(allocator, block);
-	}
-
-	private nint ReallocDetour(nint allocator, nint block, ulong size, ulong alignment)
-	{
-		// The allocator frees the old block internally, bypassing our Free; stop tracking it first.
-		if (block != 0 && allocator == this.target)
-			this.owned.TryRemove(block, out _);
-
-		return ((delegate* unmanaged<nint, nint, ulong, ulong, nint>)this.originalRealloc)(allocator, block, size, alignment);
 	}
 
 	private void TerminateDetour(nint allocator)
@@ -212,7 +206,6 @@ public unsafe class StagingPool: IDisposable
 			this.target = 0;
 			foreach (Bucket bucket in this.buckets)
 				bucket.Clear();
-			this.owned.Clear();
 			this.Status = "Off (allocator terminated)";
 		}
 
@@ -226,7 +219,6 @@ public unsafe class StagingPool: IDisposable
 
 		WriteSlot(this.vtable, AllocSlot, this.originalAlloc);
 		WriteSlot(this.vtable, FreeSlot, this.originalFree);
-		WriteSlot(this.vtable, ReallocSlot, this.originalRealloc);
 		WriteSlot(this.vtable, TerminateSlot, this.originalTerminate);
 		this.vtable = null;
 	}
@@ -244,8 +236,7 @@ public unsafe class StagingPool: IDisposable
 			}
 		}
 
-		// Blocks still in use stay valid allocations and are freed normally later.
-		this.owned.Clear();
+		// Blocks still held by the game are genuine allocations and are freed normally later.
 	}
 
 	public void Dispose()
