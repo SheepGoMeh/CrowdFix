@@ -114,35 +114,26 @@ public unsafe class IdleNotifierFilter: IDisposable
 
 		this.verifyTimer.Restart();
 		int missing = 0;
-		int stale = 0;
+		int found = 0;
 
+		// No allocations, the walk runs under the game's notifier lock
 		EnterCriticalSection(this.lockAddress);
 		try
 		{
-			HashSet<nint> linked = [];
 			for (nint node = *(nint*)this.headAddress; node != 0; node = *(nint*)(node + 0x10))
 			{
-				linked.Add(node);
-				if (!activeIndex.ContainsKey(node) && this.CanDoWork(node))
-				{
-					Add(node);
+				if (activeIndex.ContainsKey(node))
+					found++;
+				else if (this.CanDoWork(node))
 					missing++;
-				}
-			}
-
-			for (int i = activeCount - 1; i >= 0; i--)
-			{
-				if (!linked.Contains(active[i]))
-				{
-					Remove(active[i]);
-					stale++;
-				}
 			}
 		}
 		finally
 		{
 			LeaveCriticalSection(this.lockAddress);
 		}
+
+		int stale = activeCount - found;
 
 		if (missing > 0 || stale > 0)
 		{
