@@ -28,6 +28,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 	private readonly HiddenHotbarSkip hiddenHotbarSkip;
 	private readonly AnimTailParallel animTailParallel;
 	private readonly CharacterCullSplit characterCullSplit;
+	private readonly CullPerItemClaim cullPerItemClaim;
 	private readonly WindowSystem windowSystem;
 	private readonly ConfigWindow configWindow;
 
@@ -52,12 +53,13 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.hiddenHotbarSkip = new HiddenHotbarSkip();
 		this.animTailParallel = new AnimTailParallel();
 		this.characterCullSplit = new CharacterCullSplit();
+		this.cullPerItemClaim = new CullPerItemClaim();
 
 		this.windowSystem = new WindowSystem("CrowdFix");
 		this.configWindow = new ConfigWindow(
 			this.configuration, this.idleNotifierFilter, this.jobWakeChain, this.skeletonSyncDedupe, this.cullingClearTrim, this.allocatorFreeLock, this.stagingPool,
 			this.hiddenMinionFreeze, this.prepareWaitSkip, this.bgPrepInline, this.hiddenHotbarSkip, this.animTailParallel,
-			this.characterCullSplit,
+			this.characterCullSplit, this.cullPerItemClaim,
 			() => this.settingsPending = true);
 		this.windowSystem.AddWindow(this.configWindow);
 
@@ -89,6 +91,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.hiddenHotbarSkip.SetEnabled(this.configuration.SkipHiddenHotbars);
 			this.animTailParallel.SetEnabled(this.configuration.ParallelAnimTail);
 			this.characterCullSplit.SetEnabled(this.configuration.SplitCharacterCulling);
+			this.cullPerItemClaim.SetEnabled(this.configuration.PerItemCullingClaims);
 
 			// The job pool and the graphics allocator may not exist yet right after login; keep retrying until they do.
 			this.settingsPending =
@@ -125,6 +128,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.bgPrepInline.SetEnabled(false);
 			this.animTailParallel.SetEnabled(false);
 			this.characterCullSplit.SetEnabled(false);
+			this.cullPerItemClaim.SetEnabled(false);
 			this.prepareWaitSkip.Dispose();
 			this.hiddenHotbarSkip.Dispose();
 			this.idleNotifierFilter.Dispose();
@@ -141,6 +145,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.bgPrepInline.Dispose();
 		this.animTailParallel.Dispose();
 		this.characterCullSplit.Dispose();
+		this.cullPerItemClaim.Dispose();
 	}
 
 	public void Dispose()

@@ -18,6 +18,7 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool SkipHiddenHotbars = true;
 	public bool ParallelAnimTail = true;
 	public bool SplitCharacterCulling;
+	public bool PerItemCullingClaims;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
 }

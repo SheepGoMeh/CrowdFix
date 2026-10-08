@@ -21,6 +21,7 @@ public class ConfigWindow(
 	HiddenHotbarSkip hiddenHotbarSkip,
 	AnimTailParallel animTailParallel,
 	CharacterCullSplit characterCullSplit,
+	CullPerItemClaim cullPerItemClaim,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -97,6 +98,12 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(characterCullSplit.Status);
+
+		ImGui.BeginDisabled(!cullPerItemClaim.Available);
+		if (ImGui.Checkbox("Share culling cells one at a time", ref configuration.PerItemCullingClaims))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(cullPerItemClaim.Status);
 	}
 
 	private void Save()
