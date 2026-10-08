@@ -20,6 +20,7 @@ public class ConfigWindow(
 	BgPrepInline bgPrepInline,
 	HiddenHotbarSkip hiddenHotbarSkip,
 	AnimTailParallel animTailParallel,
+	CharacterCullSplit characterCullSplit,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -90,6 +91,12 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(animTailParallel.Status);
+
+		ImGui.BeginDisabled(!characterCullSplit.Available);
+		if (ImGui.Checkbox("Split character culling across workers", ref configuration.SplitCharacterCulling))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(characterCullSplit.Status);
 	}
 
 	private void Save()
