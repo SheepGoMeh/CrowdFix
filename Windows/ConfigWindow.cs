@@ -22,6 +22,7 @@ public class ConfigWindow(
 	AnimTailParallel animTailParallel,
 	CharacterCullSplit characterCullSplit,
 	CullPerItemClaim cullPerItemClaim,
+	GatherUsedBytes gatherUsedBytes,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -104,6 +105,12 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(cullPerItemClaim.Status);
+
+		ImGui.BeginDisabled(!gatherUsedBytes.Available);
+		if (ImGui.Checkbox("Gather only used render commands", ref configuration.GatherUsedCommands))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(gatherUsedBytes.Status);
 	}
 
 	private void Save()

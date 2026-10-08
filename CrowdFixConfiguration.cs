@@ -19,6 +19,7 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool ParallelAnimTail = true;
 	public bool SplitCharacterCulling;
 	public bool PerItemCullingClaims;
+	public bool GatherUsedCommands = true;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
 }
