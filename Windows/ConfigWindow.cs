@@ -18,6 +18,7 @@ public class ConfigWindow(
 	HiddenMinionFreeze hiddenMinionFreeze,
 	PrepareWaitSkip prepareWaitSkip,
 	BgPrepInline bgPrepInline,
+	HiddenHotbarSkip hiddenHotbarSkip,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -76,6 +77,12 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(bgPrepInline.Status);
+
+		ImGui.BeginDisabled(!hiddenHotbarSkip.Available);
+		if (ImGui.Checkbox("Skip slot updates on hidden hotbars", ref configuration.SkipHiddenHotbars))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(hiddenHotbarSkip.Status);
 	}
 
 	private void Save()

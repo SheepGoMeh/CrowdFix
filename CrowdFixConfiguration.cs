@@ -15,6 +15,7 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool FreezeHiddenMinions = true;
 	public bool SkipPrepareWait;
 	public bool InlineBgPrep;
+	public bool SkipHiddenHotbars = true;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
 }

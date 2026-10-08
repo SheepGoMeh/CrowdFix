@@ -25,6 +25,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 	private readonly HiddenMinionFreeze hiddenMinionFreeze;
 	private readonly PrepareWaitSkip prepareWaitSkip;
 	private readonly BgPrepInline bgPrepInline;
+	private readonly HiddenHotbarSkip hiddenHotbarSkip;
 	private readonly WindowSystem windowSystem;
 	private readonly ConfigWindow configWindow;
 
@@ -46,11 +47,12 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.hiddenMinionFreeze = new HiddenMinionFreeze();
 		this.prepareWaitSkip = new PrepareWaitSkip();
 		this.bgPrepInline = new BgPrepInline();
+		this.hiddenHotbarSkip = new HiddenHotbarSkip();
 
 		this.windowSystem = new WindowSystem("CrowdFix");
 		this.configWindow = new ConfigWindow(
 			this.configuration, this.idleNotifierFilter, this.jobWakeChain, this.skeletonSyncDedupe, this.cullingClearTrim, this.allocatorFreeLock, this.stagingPool,
-			this.hiddenMinionFreeze, this.prepareWaitSkip, this.bgPrepInline,
+			this.hiddenMinionFreeze, this.prepareWaitSkip, this.bgPrepInline, this.hiddenHotbarSkip,
 			() => this.settingsPending = true);
 		this.windowSystem.AddWindow(this.configWindow);
 
@@ -79,6 +81,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.hiddenMinionFreeze.SetEnabled(this.configuration.FreezeHiddenMinions);
 			this.prepareWaitSkip.SetEnabled(this.configuration.SkipPrepareWait);
 			this.bgPrepInline.SetEnabled(this.configuration.InlineBgPrep);
+			this.hiddenHotbarSkip.SetEnabled(this.configuration.SkipHiddenHotbars);
 
 			// The job pool and the graphics allocator may not exist yet right after login; keep retrying until they do.
 			this.settingsPending =
@@ -114,6 +117,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.hiddenMinionFreeze.SetEnabled(false);
 			this.bgPrepInline.SetEnabled(false);
 			this.prepareWaitSkip.Dispose();
+			this.hiddenHotbarSkip.Dispose();
 			this.idleNotifierFilter.Dispose();
 			this.cullingClearTrim.Dispose();
 			this.stagingPool.Dispose();
