@@ -17,6 +17,7 @@ public class ConfigWindow(
 	StagingPool stagingPool,
 	HiddenMinionFreeze hiddenMinionFreeze,
 	PrepareWaitSkip prepareWaitSkip,
+	BgPrepInline bgPrepInline,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -69,6 +70,12 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(prepareWaitSkip.Status);
+
+		ImGui.BeginDisabled(!bgPrepInline.Available);
+		if (ImGui.Checkbox("Run BG instancing prep inline", ref configuration.InlineBgPrep))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(bgPrepInline.Status);
 	}
 
 	private void Save()

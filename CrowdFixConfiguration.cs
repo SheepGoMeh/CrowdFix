@@ -14,6 +14,7 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool PoolStagingBlocks;
 	public bool FreezeHiddenMinions = true;
 	public bool SkipPrepareWait;
+	public bool InlineBgPrep;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
 }

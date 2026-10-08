@@ -24,6 +24,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 	private readonly StagingPool stagingPool;
 	private readonly HiddenMinionFreeze hiddenMinionFreeze;
 	private readonly PrepareWaitSkip prepareWaitSkip;
+	private readonly BgPrepInline bgPrepInline;
 	private readonly WindowSystem windowSystem;
 	private readonly ConfigWindow configWindow;
 
@@ -44,11 +45,12 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.stagingPool = new StagingPool();
 		this.hiddenMinionFreeze = new HiddenMinionFreeze();
 		this.prepareWaitSkip = new PrepareWaitSkip();
+		this.bgPrepInline = new BgPrepInline();
 
 		this.windowSystem = new WindowSystem("CrowdFix");
 		this.configWindow = new ConfigWindow(
 			this.configuration, this.idleNotifierFilter, this.jobWakeChain, this.skeletonSyncDedupe, this.cullingClearTrim, this.allocatorFreeLock, this.stagingPool,
-			this.hiddenMinionFreeze, this.prepareWaitSkip,
+			this.hiddenMinionFreeze, this.prepareWaitSkip, this.bgPrepInline,
 			() => this.settingsPending = true);
 		this.windowSystem.AddWindow(this.configWindow);
 
@@ -76,11 +78,13 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.stagingPool.SetEnabled(this.configuration.PoolStagingBlocks);
 			this.hiddenMinionFreeze.SetEnabled(this.configuration.FreezeHiddenMinions);
 			this.prepareWaitSkip.SetEnabled(this.configuration.SkipPrepareWait);
+			this.bgPrepInline.SetEnabled(this.configuration.InlineBgPrep);
 
 			// The job pool and the graphics allocator may not exist yet right after login; keep retrying until they do.
 			this.settingsPending =
 				(this.configuration.ChainWorkerWakeups && this.jobWakeChain.Available && !this.jobWakeChain.Enabled) ||
-				(this.configuration.PoolStagingBlocks && this.stagingPool.Available && !this.stagingPool.Enabled);
+				(this.configuration.PoolStagingBlocks && this.stagingPool.Available && !this.stagingPool.Enabled) ||
+				(this.configuration.InlineBgPrep && this.bgPrepInline.Available && !this.bgPrepInline.Enabled);
 		}
 
 		this.idleNotifierFilter.Update();
@@ -108,6 +112,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.skeletonSyncDedupe.SetEnabled(false);
 			this.allocatorFreeLock.SetEnabled(false);
 			this.hiddenMinionFreeze.SetEnabled(false);
+			this.bgPrepInline.SetEnabled(false);
 			this.prepareWaitSkip.Dispose();
 			this.idleNotifierFilter.Dispose();
 			this.cullingClearTrim.Dispose();
@@ -120,6 +125,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.skeletonSyncDedupe.Dispose();
 		this.allocatorFreeLock.Dispose();
 		this.hiddenMinionFreeze.Dispose();
+		this.bgPrepInline.Dispose();
 	}
 
 	public void Dispose()
