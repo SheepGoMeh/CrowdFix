@@ -102,13 +102,12 @@ public unsafe class JobWakeChain: IDisposable
 	/// </summary>
 	private static int WakeOne(nint jobPool, bool bumpAwake)
 	{
-		nint* threads = *(nint**)(jobPool + 0x08);
-		uint count = *(uint*)(jobPool + 0x10);
+		TaskManager.JobPool* pool = (TaskManager.JobPool*)jobPool;
 		int woken = 0;
 
-		for (int i = 0; i < count; i++)
+		for (int i = 0; i < pool->ThreadCount; i++)
 		{
-			nint worker = threads[i];
+			nint worker = (nint)pool->Threads[i];
 			if (*(byte*)(worker + 0x35) != 0)
 				continue;
 
@@ -123,7 +122,7 @@ public unsafe class JobWakeChain: IDisposable
 
 			if (Interlocked.Increment(ref wakeCount) == 1)
 			{
-				SetEvent(*(nint*)(worker + 0x40));
+				SetEvent(((TaskManager.JobPool.InnerThread*)worker)->EventHandle2);
 				woken++;
 			}
 		}

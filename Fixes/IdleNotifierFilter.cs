@@ -5,6 +5,8 @@ using System.Runtime.InteropServices;
 
 using Dalamud.Hooking;
 
+using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
+
 namespace CrowdFix.Fixes;
 
 /// <summary>
@@ -120,7 +122,7 @@ public unsafe class IdleNotifierFilter: IDisposable
 		EnterCriticalSection(this.lockAddress);
 		try
 		{
-			for (nint node = *(nint*)this.headAddress; node != 0; node = *(nint*)(node + 0x10))
+			for (nint node = *(nint*)this.headAddress; node != 0; node = (nint)((Notifier*)node)->Prev)
 			{
 				if (activeIndex.ContainsKey(node))
 					found++;
@@ -149,7 +151,7 @@ public unsafe class IdleNotifierFilter: IDisposable
 		{
 			activeIndex.Clear();
 			activeCount = 0;
-			for (nint node = *(nint*)this.headAddress; node != 0; node = *(nint*)(node + 0x10))
+			for (nint node = *(nint*)this.headAddress; node != 0; node = (nint)((Notifier*)node)->Prev)
 			{
 				if (this.CanDoWork(node))
 					Add(node);
@@ -199,10 +201,10 @@ public unsafe class IdleNotifierFilter: IDisposable
 				flags = *(uint*)(node + 0x20);
 				return (flags & 0x11) != 0 && (flags & 0x40) == 0;
 			case 0x2142598: // TextureDx11
-				flags = *(uint*)(node + 0x3C);
+				flags = (uint)((Texture*)(node - 0x20))->Flags; // Notifier sits at Texture+0x20
 				return (flags & 0x100010) == 0x100010 || (flags & 0x2000) != 0;
 			case 0x2142BD8: // ConstantBuffer
-				return (*(uint*)(node - 0x14) & 0x4000) != 0;
+				return (((ConstantBuffer*)(node - 0x38))->Flags & 0x4000) != 0; // Notifier sits at ConstantBuffer+0x38
 			default: // unknown class, always visit
 				return true;
 		}

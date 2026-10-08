@@ -2,6 +2,8 @@ using System;
 
 using Dalamud.Hooking;
 
+using FFXIVClientStructs.FFXIV.Client.Game.Object;
+
 namespace CrowdFix.Fixes;
 
 /// <summary>
@@ -14,9 +16,6 @@ public unsafe class HiddenMinionFreeze: IDisposable
 {
 	// Tail jump to the follow AI at the end of Companion.Update
 	private const string FollowSignature = "E9 ?? ?? ?? ?? 48 8B CF E8 ?? ?? ?? ?? F3 0F 58 87 ?? ?? ?? ?? 0F 2F 05";
-
-	private const int RenderFlagsOffset = 0x118; // GameObject.RenderFlags
-	private const ulong ModelHidden = 1ul << 1;
 
 	private delegate void FollowDelegate(nint companion);
 
@@ -58,7 +57,7 @@ public unsafe class HiddenMinionFreeze: IDisposable
 
 	private void FollowDetour(nint companion)
 	{
-		if ((*(ulong*)(companion + RenderFlagsOffset) & ModelHidden) != 0)
+		if (((GameObject*)companion)->RenderFlags.HasFlag(VisibilityFlags.Model))
 			return;
 
 		this.followHook!.Original(companion);
