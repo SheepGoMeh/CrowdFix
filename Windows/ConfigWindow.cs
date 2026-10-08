@@ -19,6 +19,7 @@ public class ConfigWindow(
 	PrepareWaitSkip prepareWaitSkip,
 	BgPrepInline bgPrepInline,
 	HiddenHotbarSkip hiddenHotbarSkip,
+	AnimTailParallel animTailParallel,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -83,6 +84,12 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(hiddenHotbarSkip.Status);
+
+		ImGui.BeginDisabled(!animTailParallel.Available);
+		if (ImGui.Checkbox("Finish skeleton animation in parallel", ref configuration.ParallelAnimTail))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(animTailParallel.Status);
 	}
 
 	private void Save()

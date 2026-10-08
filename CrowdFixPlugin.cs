@@ -26,6 +26,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 	private readonly PrepareWaitSkip prepareWaitSkip;
 	private readonly BgPrepInline bgPrepInline;
 	private readonly HiddenHotbarSkip hiddenHotbarSkip;
+	private readonly AnimTailParallel animTailParallel;
 	private readonly WindowSystem windowSystem;
 	private readonly ConfigWindow configWindow;
 
@@ -48,11 +49,12 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.prepareWaitSkip = new PrepareWaitSkip();
 		this.bgPrepInline = new BgPrepInline();
 		this.hiddenHotbarSkip = new HiddenHotbarSkip();
+		this.animTailParallel = new AnimTailParallel();
 
 		this.windowSystem = new WindowSystem("CrowdFix");
 		this.configWindow = new ConfigWindow(
 			this.configuration, this.idleNotifierFilter, this.jobWakeChain, this.skeletonSyncDedupe, this.cullingClearTrim, this.allocatorFreeLock, this.stagingPool,
-			this.hiddenMinionFreeze, this.prepareWaitSkip, this.bgPrepInline, this.hiddenHotbarSkip,
+			this.hiddenMinionFreeze, this.prepareWaitSkip, this.bgPrepInline, this.hiddenHotbarSkip, this.animTailParallel,
 			() => this.settingsPending = true);
 		this.windowSystem.AddWindow(this.configWindow);
 
@@ -82,6 +84,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.prepareWaitSkip.SetEnabled(this.configuration.SkipPrepareWait);
 			this.bgPrepInline.SetEnabled(this.configuration.InlineBgPrep);
 			this.hiddenHotbarSkip.SetEnabled(this.configuration.SkipHiddenHotbars);
+			this.animTailParallel.SetEnabled(this.configuration.ParallelAnimTail);
 
 			// The job pool and the graphics allocator may not exist yet right after login; keep retrying until they do.
 			this.settingsPending =
@@ -116,6 +119,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.allocatorFreeLock.SetEnabled(false);
 			this.hiddenMinionFreeze.SetEnabled(false);
 			this.bgPrepInline.SetEnabled(false);
+			this.animTailParallel.SetEnabled(false);
 			this.prepareWaitSkip.Dispose();
 			this.hiddenHotbarSkip.Dispose();
 			this.idleNotifierFilter.Dispose();
@@ -130,6 +134,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.allocatorFreeLock.Dispose();
 		this.hiddenMinionFreeze.Dispose();
 		this.bgPrepInline.Dispose();
+		this.animTailParallel.Dispose();
 	}
 
 	public void Dispose()

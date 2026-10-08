@@ -16,6 +16,7 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool SkipPrepareWait;
 	public bool InlineBgPrep;
 	public bool SkipHiddenHotbars = true;
+	public bool ParallelAnimTail = true;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
 }
