@@ -13,6 +13,7 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool ShortenAllocatorLock;
 	public bool PoolStagingBlocks;
 	public bool FreezeHiddenMinions = true;
+	public bool SkipPrepareWait;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
 }

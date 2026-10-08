@@ -23,6 +23,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 	private readonly AllocatorFreeLock allocatorFreeLock;
 	private readonly StagingPool stagingPool;
 	private readonly HiddenMinionFreeze hiddenMinionFreeze;
+	private readonly PrepareWaitSkip prepareWaitSkip;
 	private readonly WindowSystem windowSystem;
 	private readonly ConfigWindow configWindow;
 
@@ -42,11 +43,12 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.allocatorFreeLock = new AllocatorFreeLock();
 		this.stagingPool = new StagingPool();
 		this.hiddenMinionFreeze = new HiddenMinionFreeze();
+		this.prepareWaitSkip = new PrepareWaitSkip();
 
 		this.windowSystem = new WindowSystem("CrowdFix");
 		this.configWindow = new ConfigWindow(
 			this.configuration, this.idleNotifierFilter, this.jobWakeChain, this.skeletonSyncDedupe, this.cullingClearTrim, this.allocatorFreeLock, this.stagingPool,
-			this.hiddenMinionFreeze,
+			this.hiddenMinionFreeze, this.prepareWaitSkip,
 			() => this.settingsPending = true);
 		this.windowSystem.AddWindow(this.configWindow);
 
@@ -73,6 +75,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.allocatorFreeLock.SetEnabled(this.configuration.ShortenAllocatorLock);
 			this.stagingPool.SetEnabled(this.configuration.PoolStagingBlocks);
 			this.hiddenMinionFreeze.SetEnabled(this.configuration.FreezeHiddenMinions);
+			this.prepareWaitSkip.SetEnabled(this.configuration.SkipPrepareWait);
 
 			// The job pool and the graphics allocator may not exist yet right after login; keep retrying until they do.
 			this.settingsPending =
@@ -105,6 +108,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.skeletonSyncDedupe.SetEnabled(false);
 			this.allocatorFreeLock.SetEnabled(false);
 			this.hiddenMinionFreeze.SetEnabled(false);
+			this.prepareWaitSkip.Dispose();
 			this.idleNotifierFilter.Dispose();
 			this.cullingClearTrim.Dispose();
 			this.stagingPool.Dispose();

@@ -16,6 +16,7 @@ public class ConfigWindow(
 	AllocatorFreeLock allocatorFreeLock,
 	StagingPool stagingPool,
 	HiddenMinionFreeze hiddenMinionFreeze,
+	PrepareWaitSkip prepareWaitSkip,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -62,6 +63,12 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(hiddenMinionFreeze.Status);
+
+		ImGui.BeginDisabled(!prepareWaitSkip.Available);
+		if (ImGui.Checkbox("Skip redundant job list wait", ref configuration.SkipPrepareWait))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(prepareWaitSkip.Status);
 	}
 
 	private void Save()
