@@ -28,6 +28,8 @@ public class ConfigWindow(
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
+	private static readonly string[] FramePacingNames = ["Game default", "VRR display", "Fixed refresh display"];
+
 	public override void Draw()
 	{
 		ImGui.BeginDisabled(!idleNotifierFilter.Available);
@@ -115,8 +117,12 @@ public class ConfigWindow(
 		ImGui.TextDisabled(gatherUsedBytes.Status);
 
 		ImGui.BeginDisabled(!framePacer.Available);
-		if (ImGui.Checkbox("Use real 1/2 and 1/4 refresh rate frame limits", ref configuration.PaceFrameLimit))
+		int framePacing = (int)configuration.FramePacing;
+		if (ImGui.Combo("1/2 and 1/4 refresh rate limit pacing", ref framePacing, FramePacingNames, FramePacingNames.Length))
+		{
+			configuration.FramePacing = (FramePacing)framePacing;
 			this.Save();
+		}
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(framePacer.Status);
 

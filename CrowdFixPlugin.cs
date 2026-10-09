@@ -99,7 +99,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.characterCullSplit.SetEnabled(this.configuration.SplitCharacterCulling);
 			this.cullPerItemClaim.SetEnabled(this.configuration.PerItemCullingClaims);
 			this.gatherUsedBytes.SetEnabled(this.configuration.GatherUsedCommands);
-			this.framePacer.SetEnabled(this.configuration.PaceFrameLimit);
+			this.framePacer.SetMode(this.configuration.FramePacing);
 			this.joinDrain.SetEnabled(this.configuration.DrainJoins, this.configuration.InlineSmallJoins);
 
 			// The job pool and the graphics allocator may not exist yet right after login; keep retrying until they do.
@@ -141,7 +141,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.characterCullSplit.SetEnabled(false);
 			this.cullPerItemClaim.SetEnabled(false);
 			this.gatherUsedBytes.SetEnabled(false);
-			this.framePacer.SetEnabled(false);
+			this.framePacer.SetMode(FramePacing.Off);
 			this.joinDrain.SetEnabled(false, false);
 			this.prepareWaitSkip.Dispose();
 			this.hiddenHotbarSkip.Dispose();
