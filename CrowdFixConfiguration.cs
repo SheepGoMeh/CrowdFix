@@ -20,6 +20,7 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool SplitCharacterCulling = true;
 	public bool PerItemCullingClaims = true;
 	public bool GatherUsedCommands = true;
+	public bool PaceFrameLimit;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
 }

@@ -23,6 +23,7 @@ public class ConfigWindow(
 	CharacterCullSplit characterCullSplit,
 	CullPerItemClaim cullPerItemClaim,
 	GatherUsedBytes gatherUsedBytes,
+	FramePacer framePacer,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -111,6 +112,12 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(gatherUsedBytes.Status);
+
+		ImGui.BeginDisabled(!framePacer.Available);
+		if (ImGui.Checkbox("Use real 1/2 and 1/4 refresh rate frame limits", ref configuration.PaceFrameLimit))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(framePacer.Status);
 	}
 
 	private void Save()
