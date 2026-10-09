@@ -14,11 +14,11 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool PoolStagingBlocks;
 	public bool FreezeHiddenMinions = true;
 	public bool SkipPrepareWait;
-	public bool InlineBgPrep;
+	public bool InlineBgPrep = true;
 	public bool SkipHiddenHotbars = true;
 	public bool ParallelAnimTail = true;
-	public bool SplitCharacterCulling;
-	public bool PerItemCullingClaims;
+	public bool SplitCharacterCulling = true;
+	public bool PerItemCullingClaims = true;
 	public bool GatherUsedCommands = true;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
