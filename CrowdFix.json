@@ -2,9 +2,9 @@
   "Author": "SheepGoMeh",
   "Name": "CrowdFix",
   "InternalName": "CrowdFix",
-  "Description": "Cuts per-frame engine overhead that causes stutter and low FPS, most noticeable in crowded areas.\nSkips idle GPU resource notifiers, chains job worker wake-ups, drops repeated skeleton pose syncs, trims the culling visibility clear and shortens the graphics allocator lock.\nEach fix can be toggled via /crowdfix",
+  "Description": "Cuts per-frame engine overhead that causes stutter and low FPS, most noticeable in crowded areas.\nSpreads culling, skeleton animation and job joins across worker threads, and cuts waits, wake-ups, syscalls and lock contention in the job system and graphics allocator.\nSkips work nothing uses: idle GPU resource notifiers, repeated pose syncs, hidden minions' follow AI and hidden hotbar slots.\nAdds frame pacing modes for the 1/2 and 1/4 refresh rate limits on VRR and fixed refresh displays.\nEach fix can be toggled via /crowdfix\nIcon made with AI tools.",
   "Punchline": "Smoother frame times by cutting engine overhead.",
   "Tags": ["Performance", "FPS", "Stutter", "Crowd"],
-  "ApplicableVersion": "any",
-  "IconUrl": "https://raw.githubusercontent.com/SheepGoMeh/CrowdFix/main/images/icon.png"
+  "RepoUrl": "https://github.com/SheepGoMeh/CrowdFix",
+  "ApplicableVersion": "any"
 }
