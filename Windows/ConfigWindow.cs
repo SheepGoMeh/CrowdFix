@@ -24,6 +24,7 @@ public class ConfigWindow(
 	CullPerItemClaim cullPerItemClaim,
 	GatherUsedBytes gatherUsedBytes,
 	FramePacer framePacer,
+	JoinDrain joinDrain,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -117,7 +118,15 @@ public class ConfigWindow(
 		if (ImGui.Checkbox("Use real 1/2 and 1/4 refresh rate frame limits", ref configuration.PaceFrameLimit))
 			this.Save();
 		ImGui.EndDisabled();
-		ImGui.TextDisabled(framePacer.Status);
+		ImGui.TextDisabled(framePacer.Status);
+
+		ImGui.BeginDisabled(!joinDrain.Available);
+		if (ImGui.Checkbox("Finish job joins on the main thread", ref configuration.DrainJoins))
+			this.Save();
+		if (ImGui.Checkbox("Run small culling joins on the main thread", ref configuration.InlineSmallJoins))
+			this.Save();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(joinDrain.Status);
 	}
 
 	private void Save()

@@ -21,6 +21,8 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool PerItemCullingClaims = true;
 	public bool GatherUsedCommands = true;
 	public bool PaceFrameLimit;
+	public bool DrainJoins = true;
+	public bool InlineSmallJoins = true;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
 }

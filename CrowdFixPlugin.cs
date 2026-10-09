@@ -31,6 +31,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 	private readonly CullPerItemClaim cullPerItemClaim;
 	private readonly GatherUsedBytes gatherUsedBytes;
 	private readonly FramePacer framePacer;
+	private readonly JoinDrain joinDrain;
 	private readonly WindowSystem windowSystem;
 	private readonly ConfigWindow configWindow;
 
@@ -58,12 +59,13 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.cullPerItemClaim = new CullPerItemClaim();
 		this.gatherUsedBytes = new GatherUsedBytes();
 		this.framePacer = new FramePacer();
+		this.joinDrain = new JoinDrain();
 
 		this.windowSystem = new WindowSystem("CrowdFix");
 		this.configWindow = new ConfigWindow(
 			this.configuration, this.idleNotifierFilter, this.jobWakeChain, this.skeletonSyncDedupe, this.cullingClearTrim, this.allocatorFreeLock, this.stagingPool,
 			this.hiddenMinionFreeze, this.prepareWaitSkip, this.bgPrepInline, this.hiddenHotbarSkip, this.animTailParallel,
-			this.characterCullSplit, this.cullPerItemClaim, this.gatherUsedBytes, this.framePacer,
+			this.characterCullSplit, this.cullPerItemClaim, this.gatherUsedBytes, this.framePacer, this.joinDrain,
 			() => this.settingsPending = true);
 		this.windowSystem.AddWindow(this.configWindow);
 
@@ -98,10 +100,12 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.cullPerItemClaim.SetEnabled(this.configuration.PerItemCullingClaims);
 			this.gatherUsedBytes.SetEnabled(this.configuration.GatherUsedCommands);
 			this.framePacer.SetEnabled(this.configuration.PaceFrameLimit);
+			this.joinDrain.SetEnabled(this.configuration.DrainJoins, this.configuration.InlineSmallJoins);
 
 			// The job pool and the graphics allocator may not exist yet right after login; keep retrying until they do.
 			this.settingsPending =
 				(this.configuration.ChainWorkerWakeups && this.jobWakeChain.Available && !this.jobWakeChain.Enabled) ||
+				((this.configuration.DrainJoins || this.configuration.InlineSmallJoins) && this.joinDrain.Available && !this.joinDrain.Enabled) ||
 				(this.configuration.PoolStagingBlocks && this.stagingPool.Available && !this.stagingPool.Enabled) ||
 				(this.configuration.InlineBgPrep && this.bgPrepInline.Available && !this.bgPrepInline.Enabled);
 		}
@@ -109,6 +113,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.idleNotifierFilter.Update();
 		this.skeletonSyncDedupe.Update();
 		this.cullingClearTrim.Update();
+		this.joinDrain.Update();
 	}
 
 	protected virtual void Dispose(bool disposing)
@@ -137,6 +142,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.cullPerItemClaim.SetEnabled(false);
 			this.gatherUsedBytes.SetEnabled(false);
 			this.framePacer.SetEnabled(false);
+			this.joinDrain.SetEnabled(false, false);
 			this.prepareWaitSkip.Dispose();
 			this.hiddenHotbarSkip.Dispose();
 			this.idleNotifierFilter.Dispose();
@@ -156,6 +162,7 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.cullPerItemClaim.Dispose();
 		this.gatherUsedBytes.Dispose();
 		this.framePacer.Dispose();
+		this.joinDrain.Dispose();
 	}
 
 	public void Dispose()

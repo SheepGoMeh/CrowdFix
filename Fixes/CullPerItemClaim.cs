@@ -19,7 +19,7 @@ public unsafe class CullPerItemClaim: IDisposable
 	private const string SetupJoinSignature = "48 8D 8E A8 20 00 00 41 B1 01 4C 8D 05 ?? ?? ?? ?? 48 8B D6 E8";
 	private const int SetupJoinCall = 20;
 	// call to FUN_1402ba8f0, which starts with MOV RAX,[g_CullingManager]
-	private const string CullingManagerSignature = "E8 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 83 60 ?? ?? E8";
+	internal const string CullingManagerSignature = "E8 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 83 60 ?? ?? E8";
 
 	private const int CellGroupOffset = 0x2168;
 	private const int SetupGroupOffset = 0x20A8;
