@@ -2,13 +2,6 @@ using Dalamud.Configuration;
 
 namespace CrowdFix;
 
-public enum FramePacing
-{
-	Off,
-	Vrr,
-	FixedRefresh,
-}
-
 public class CrowdFixConfiguration: IPluginConfiguration
 {
 	public int Version { get; set; }
@@ -27,7 +20,6 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool SplitCharacterCulling = true;
 	public bool PerItemCullingClaims = true;
 	public bool GatherUsedCommands = true;
-	public FramePacing FramePacing;
 	public bool DrainJoins = true;
 	public bool InlineSmallJoins = true;
 

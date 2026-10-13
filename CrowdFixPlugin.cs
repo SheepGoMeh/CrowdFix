@@ -30,7 +30,6 @@ public class CrowdFixPlugin: IDalamudPlugin
 	private readonly CharacterCullSplit characterCullSplit;
 	private readonly CullPerItemClaim cullPerItemClaim;
 	private readonly GatherUsedBytes gatherUsedBytes;
-	private readonly FramePacer framePacer;
 	private readonly JoinDrain joinDrain;
 	private readonly WindowSystem windowSystem;
 	private readonly ConfigWindow configWindow;
@@ -58,14 +57,13 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.characterCullSplit = new CharacterCullSplit();
 		this.cullPerItemClaim = new CullPerItemClaim();
 		this.gatherUsedBytes = new GatherUsedBytes();
-		this.framePacer = new FramePacer();
 		this.joinDrain = new JoinDrain();
 
 		this.windowSystem = new WindowSystem("CrowdFix");
 		this.configWindow = new ConfigWindow(
 			this.configuration, this.idleNotifierFilter, this.jobWakeChain, this.skeletonSyncDedupe, this.cullingClearTrim, this.allocatorFreeLock, this.stagingPool,
 			this.hiddenMinionFreeze, this.prepareWaitSkip, this.bgPrepInline, this.hiddenHotbarSkip, this.animTailParallel,
-			this.characterCullSplit, this.cullPerItemClaim, this.gatherUsedBytes, this.framePacer, this.joinDrain,
+			this.characterCullSplit, this.cullPerItemClaim, this.gatherUsedBytes, this.joinDrain,
 			() => this.settingsPending = true);
 		this.windowSystem.AddWindow(this.configWindow);
 
@@ -99,7 +97,6 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.characterCullSplit.SetEnabled(this.configuration.SplitCharacterCulling);
 			this.cullPerItemClaim.SetEnabled(this.configuration.PerItemCullingClaims);
 			this.gatherUsedBytes.SetEnabled(this.configuration.GatherUsedCommands);
-			this.framePacer.SetMode(this.configuration.FramePacing);
 			this.joinDrain.SetEnabled(this.configuration.DrainJoins, this.configuration.InlineSmallJoins);
 
 			// The job pool and the graphics allocator may not exist yet right after login; keep retrying until they do.
@@ -141,7 +138,6 @@ public class CrowdFixPlugin: IDalamudPlugin
 			this.characterCullSplit.SetEnabled(false);
 			this.cullPerItemClaim.SetEnabled(false);
 			this.gatherUsedBytes.SetEnabled(false);
-			this.framePacer.SetMode(FramePacing.Off);
 			this.joinDrain.SetEnabled(false, false);
 			this.prepareWaitSkip.Dispose();
 			this.hiddenHotbarSkip.Dispose();
@@ -161,7 +157,6 @@ public class CrowdFixPlugin: IDalamudPlugin
 		this.characterCullSplit.Dispose();
 		this.cullPerItemClaim.Dispose();
 		this.gatherUsedBytes.Dispose();
-		this.framePacer.Dispose();
 		this.joinDrain.Dispose();
 	}
 

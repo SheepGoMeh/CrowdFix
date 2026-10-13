@@ -23,13 +23,10 @@ public class ConfigWindow(
 	CharacterCullSplit characterCullSplit,
 	CullPerItemClaim cullPerItemClaim,
 	GatherUsedBytes gatherUsedBytes,
-	FramePacer framePacer,
 	JoinDrain joinDrain,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
-	private static readonly string[] FramePacingNames = ["Game default", "VRR display", "Fixed refresh display"];
-
 	public override void Draw()
 	{
 		ImGui.BeginDisabled(!idleNotifierFilter.Available);
@@ -115,16 +112,6 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(gatherUsedBytes.Status);
-
-		ImGui.BeginDisabled(!framePacer.Available);
-		int framePacing = (int)configuration.FramePacing;
-		if (ImGui.Combo("1/2 and 1/4 refresh rate limit pacing", ref framePacing, FramePacingNames, FramePacingNames.Length))
-		{
-			configuration.FramePacing = (FramePacing)framePacing;
-			this.Save();
-		}
-		ImGui.EndDisabled();
-		ImGui.TextDisabled(framePacer.Status);
 
 		ImGui.BeginDisabled(!joinDrain.Available);
 		if (ImGui.Checkbox("Finish job joins on the main thread", ref configuration.DrainJoins))
