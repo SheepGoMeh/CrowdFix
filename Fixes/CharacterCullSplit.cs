@@ -4,24 +4,24 @@ using System.Threading;
 
 using Dalamud.Hooking;
 
+using FFXIVClientStructs.FFXIV.Client.Graphics.Culling;
+
+using Item = FFXIVClientStructs.FFXIV.Client.Graphics.Culling.CullingManager.RenderCallbackJobItem;
+
 namespace CrowdFix.Fixes;
 
 /// <summary>
-/// Camera culling (FUN_14024bf00) splits BG objects into jobs of 200, but puts every character into a single job,
-/// so one thread culls and registers all characters while the others wait at the join. The job function
-/// (FUN_14024e860) only reads its item (type, index list, start, count), so the thread that gets the character item
+/// Camera culling (CullingManager.RenderCallbackJobs) splits BG objects into items of 200, but puts every character
+/// into a single item, so one thread culls and registers all characters while the others wait at the join. The job
+/// function (ExecuteRenderCallbackJob) only reads its item (type, slot list, start, count), so the thread that gets the character item
 /// works through it in small chunks and every thread that finishes its own item of the same group helps.
 /// </summary>
 public unsafe class CharacterCullSplit: IDisposable
 {
-	private const string CullJobSignature = "40 53 56 41 54 41 55 41 56 48 81 EC 90 00 00 00";
 	private const byte CharacterItem = 2;
-	private const int ItemSize = 0x40;
-	private const int StartOffset = 0x30;
-	private const int CountOffset = 0x34;
 	private const int Chunk = 16;
 
-	private delegate long CullJobDelegate(nint cullingManager, byte* item);
+	private delegate long CullJobDelegate(CullingManager* cullingManager, Item* item);
 
 	/// <summary>
 	/// Shared by the owner and its helpers; one character item is in flight at a time (bf00 runs one view at a time
@@ -30,8 +30,8 @@ public unsafe class CharacterCullSplit: IDisposable
 	[StructLayout(LayoutKind.Sequential)]
 	private struct Shared
 	{
-		public nint CullingManager;
-		public fixed byte Item[ItemSize];
+		public CullingManager* CullingManager;
+		public Item Item;
 		public int Total;
 		public int Next;
 		public int Active;
@@ -51,13 +51,13 @@ public unsafe class CharacterCullSplit: IDisposable
 		try
 		{
 			this.cullJobHook = Service.GameInteropProvider.HookFromAddress<CullJobDelegate>(
-				Service.SigScanner.ScanText(CullJobSignature), this.CullJobDetour);
+				(nint)CullingManager.Addresses.ExecuteRenderCallbackJob.Value, this.CullJobDetour);
 			this.shared = (Shared*)NativeMemory.AllocZeroed((nuint)sizeof(Shared));
 			this.Available = true;
 		}
 		catch (Exception e)
 		{
-			this.Status = "Unavailable (signature not found)";
+			this.Status = "Unavailable (function not resolved)";
 			Service.PluginLog.Warning(e, "CharacterCullSplit unavailable");
 		}
 	}
@@ -82,14 +82,14 @@ public unsafe class CharacterCullSplit: IDisposable
 	/// <summary>
 	/// Job workers and the main thread's help loop.
 	/// </summary>
-	private long CullJobDetour(nint cullingManager, byte* item)
+	private long CullJobDetour(CullingManager* cullingManager, Item* item)
 	{
 		Shared* s = this.shared;
-		if (item[0] == CharacterItem && *(uint*)(item + CountOffset) > Chunk && Volatile.Read(ref s->Active) == 0)
+		if (item->Type == CharacterItem && item->Count > Chunk && Volatile.Read(ref s->Active) == 0)
 		{
-			Buffer.MemoryCopy(item, s->Item, ItemSize, ItemSize);
+			s->Item = *item;
 			s->CullingManager = cullingManager;
-			s->Total = (int)*(uint*)(item + CountOffset);
+			s->Total = (int)item->Count;
 			s->Next = 0;
 			Volatile.Write(ref s->Active, 1);
 			this.Help(s);
@@ -106,9 +106,8 @@ public unsafe class CharacterCullSplit: IDisposable
 
 	private void Help(Shared* s)
 	{
-		byte* local = stackalloc byte[ItemSize];
-		Buffer.MemoryCopy(s->Item, local, ItemSize, ItemSize);
-		uint start = *(uint*)(local + StartOffset);
+		Item local = s->Item;
+		uint start = local.Start;
 		int total = s->Total;
 		while (true)
 		{
@@ -116,9 +115,9 @@ public unsafe class CharacterCullSplit: IDisposable
 			if (i >= total)
 				break;
 
-			*(uint*)(local + StartOffset) = start + (uint)i;
-			*(uint*)(local + CountOffset) = (uint)Math.Min(Chunk, total - i);
-			this.cullJobHook!.Original(s->CullingManager, local);
+			local.Start = start + (uint)i;
+			local.Count = (uint)Math.Min(Chunk, total - i);
+			this.cullJobHook!.Original(s->CullingManager, &local);
 		}
 	}
 

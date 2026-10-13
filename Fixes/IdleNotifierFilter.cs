@@ -10,18 +10,19 @@ using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 namespace CrowdFix.Fixes;
 
 /// <summary>
-/// DeviceDX11.PostTick walks every Kernel::Notifier twice per frame (vtbl+0x10 before Present, vtbl+0x08 after
+/// DeviceDX11.PostTick walks every Kernel::Notifier twice per frame (EndFrame before Present, BeginFrame after
 /// kicking the render thread). Every GPU resource is linked into that list for device events, but only CPU mapped
 /// buffers do per frame work, so a crowd turns into ~50k cache missing calls that return immediately.
 /// This keeps a set of the notifiers that can do work and patches both loops to walk only that set.
 /// </summary>
 public unsafe class IdleNotifierFilter: IDisposable
 {
-	// LEA RCX,[lock]; CALL [EnterCriticalSection]; MOV RBX,[head]; TEST; JZ; MOV RAX,[RBX]; MOV RCX,RBX; CALL [RAX+0x10]
-	private const string ListSignature = "48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 48 8B 03 48 8B CB FF 50 10";
-	private const string LinkSignature = "E8 ?? ?? ?? ?? 41 0F B6 C5 E9";
-	private const string UnlinkSignature = "E8 ?? ?? ?? ?? 45 33 F6 48 8D 5E";
+	private const int ListLockOffset = 0x18; // Notifier_ListLock follows Notifier_ListHead (ida/data.yml)
+	private static readonly int TextureNotifierOffset = StructOffset.Of<Texture>(nameof(Texture.Notifier));
+	private static readonly int BeginFrameOffset = StructOffset.Of<Notifier.NotifierVirtualTable>(nameof(Notifier.BeginFrame));
+	private static readonly int EndFrameOffset = StructOffset.Of<Notifier.NotifierVirtualTable>(nameof(Notifier.EndFrame));
 
+	// DeviceDX11.PostTick is not in ClientStructs.
 	// PostTick loops: MOV RBX,[head]; TEST; JZ; MOV RAX,[RBX]; MOV RCX,RBX; CALL [RAX+off]; MOV RBX,[RBX+0x10]; TEST; JNZ
 	private const string PrePresentLoopSignature = "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 12 48 8B 03 48 8B CB FF 50 10 48 8B 5B 10 48 85 DB 75 EE";
 	private const string PostKickLoopSignature = "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 14 66 90 48 8B 03 48 8B CB FF 50 08 48 8B 5B 10 48 85 DB 75 EE";
@@ -45,8 +46,8 @@ public unsafe class IdleNotifierFilter: IDisposable
 	private static readonly Dictionary<nint, int> activeIndex = new();
 
 	// Delegates rather than [UnmanagedCallersOnly]: plugins live in a collectible load context.
-	private static readonly LoopDelegate CallActivePrePresent = () => CallActive(0x10);
-	private static readonly LoopDelegate CallActivePostKick = () => CallActive(0x08);
+	private static readonly LoopDelegate CallActivePrePresent = () => CallActive(EndFrameOffset);
+	private static readonly LoopDelegate CallActivePostKick = () => CallActive(BeginFrameOffset);
 
 	private readonly nint lockAddress;
 	private readonly nint headAddress;
@@ -72,16 +73,15 @@ public unsafe class IdleNotifierFilter: IDisposable
 	{
 		try
 		{
-			nint list = Service.SigScanner.ScanText(ListSignature);
-			this.lockAddress = list + 7 + Marshal.ReadInt32(list, 3);
-			this.headAddress = list + 20 + Marshal.ReadInt32(list, 16);
+			this.headAddress = (nint)Notifier.StaticAddressPointers.ppListHead;
+			this.lockAddress = this.headAddress + ListLockOffset;
 			this.moduleBase = Service.SigScanner.Module.BaseAddress;
 			this.prePresentLoop = Service.SigScanner.ScanText(PrePresentLoopSignature);
 			this.postKickLoop = Service.SigScanner.ScanText(PostKickLoopSignature);
 			this.linkHook = Service.GameInteropProvider.HookFromAddress<NodeDelegate>(
-				Service.SigScanner.ScanText(LinkSignature), this.LinkDetour);
+				(nint)Notifier.Addresses.Link.Value, this.LinkDetour);
 			this.unlinkHook = Service.GameInteropProvider.HookFromAddress<NodeDelegate>(
-				Service.SigScanner.ScanText(UnlinkSignature), this.UnlinkDetour);
+				(nint)Notifier.Addresses.Unlink.Value, this.UnlinkDetour);
 			this.Available = true;
 		}
 		catch (Exception e)
@@ -188,7 +188,7 @@ public unsafe class IdleNotifierFilter: IDisposable
 	private bool CanDoWork(nint node)
 	{
 		nint vtable = *(nint*)node;
-		if (IsBareReturn(*(nint*)(vtable + 0x08)) && IsBareReturn(*(nint*)(vtable + 0x10)))
+		if (IsBareReturn(*(nint*)(vtable + BeginFrameOffset)) && IsBareReturn(*(nint*)(vtable + EndFrameOffset)))
 			return false;
 
 		uint flags;
@@ -201,8 +201,9 @@ public unsafe class IdleNotifierFilter: IDisposable
 				flags = *(uint*)(node + 0x20);
 				return (flags & 0x11) != 0 && (flags & 0x40) == 0;
 			case 0x2142598: // TextureDx11
-				flags = (uint)((Texture*)(node - 0x20))->Flags; // Notifier sits at Texture+0x20
-				return (flags & 0x100010) == 0x100010 || (flags & 0x2000) != 0;
+				TextureFlags textureFlags = ((Texture*)(node - TextureNotifierOffset))->Flags;
+				const TextureFlags mappedTarget = TextureFlags.TextureRenderTarget | TextureFlags.CpuRead;
+				return (textureFlags & mappedTarget) == mappedTarget || ((uint)textureFlags & 0x2000) != 0; // 0x2000 not named in TextureFlags
 			case 0x2142BD8: // ConstantBuffer
 				return (((ConstantBuffer*)(node - 0x38))->Flags & 0x4000) != 0; // Notifier sits at ConstantBuffer+0x38
 			default: // unknown class, always visit

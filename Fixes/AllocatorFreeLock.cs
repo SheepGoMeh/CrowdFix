@@ -3,10 +3,12 @@ using System.Runtime.InteropServices;
 
 using Dalamud.Hooking;
 
+using FFXIVClientStructs.FFXIV.Client.Graphics;
+
 namespace CrowdFix.Fixes;
 
 /// <summary>
-/// The graphics small-object allocator (AllocatorManager+0x10, Free FUN_140334ba0) takes its lock before checking
+/// The graphics small-object allocator (AllocatorPool, behind AllocatorManager.TempAllocator) takes its lock before checking
 /// whether a block came from its slabs, and for every other block calls the backing allocator's free while still
 /// holding that lock. Draw building frees ~1,200 such staging blocks per frame from all job threads, so small
 /// allocations queue behind backing frees. Here the slab check stays under the lock, but backing frees happen after
@@ -15,14 +17,16 @@ namespace CrowdFix.Fixes;
 /// </summary>
 public unsafe class AllocatorFreeLock: IDisposable
 {
-	private const string FreeSignature = "48 85 D2 0F 84 ?? ?? ?? ?? 48 89 74 24 ?? 57 48 83 EC ?? 48 8B F1 48 89 5C 24 ?? 48 81 C1";
+	private static readonly int LockOffset = StructOffset.Of<AllocatorPool>("Lock");
 
-	// Small-object allocator layout (FUN_140334ba0 / FUN_1403348e0)
-	private const int BackingOffset = 0x108;
-	private const int ChunkTableOffset = 0x110;
-	private const int ChunkCountOffset = 0x130;
-	private const int LockOffset = 0x158;
-	private const int BackingFreeSlot = 0x20;
+	// AllocatorPool.Chunks is an array of 0x30 byte entries (not typed in ClientStructs): ChunkStride is the distance
+	// between entries, ChunkBlockOffset where an entry keeps the address of its 16 KB block.
+	private const int ChunkStride = 0x30;
+	private const int ChunkBlockOffset = 0x10;
+	private const int ChunkSize = 0x4000;
+	// Each block is split into 1 KB pages; a page header holds the index of its chunk entry.
+	private const nint PageMask = 0x3FF;
+	private const int PageChunkIndexOffset = 0x1C;
 
 	private delegate void FreeDelegate(nint allocator, nint block);
 
@@ -42,12 +46,12 @@ public unsafe class AllocatorFreeLock: IDisposable
 		try
 		{
 			this.freeHook = Service.GameInteropProvider.HookFromAddress<FreeDelegate>(
-				Service.SigScanner.ScanText(FreeSignature), this.FreeDetour);
+				(nint)AllocatorPool.StaticVirtualTablePointer->Free, this.FreeDetour);
 			this.Available = true;
 		}
 		catch (Exception e)
 		{
-			this.Status = "Unavailable (signature not found)";
+			this.Status = "Unavailable (function not resolved)";
 			Service.PluginLog.Warning(e, "AllocatorFreeLock unavailable");
 		}
 	}
@@ -87,23 +91,23 @@ public unsafe class AllocatorFreeLock: IDisposable
 		}
 
 		LeaveCriticalSection(criticalSection);
-		nint backing = *(nint*)(allocator + BackingOffset);
-		((delegate* unmanaged<nint, nint, void>)(*(nint*)(*(nint*)backing + BackingFreeSlot)))(backing, block);
+		((AllocatorPool*)allocator)->Backing->Free((void*)block);
 	}
 
 	/// <summary>
-	/// The original's membership test (page header at block &amp; ~0x3FF). Only valid under the allocator lock, since
+	/// The original's membership test (page header at block &amp; ~PageMask). Only valid under the allocator lock, since
 	/// the chunk table is reallocated when it grows.
 	/// </summary>
 	private static bool IsSlabBlock(nint allocator, nint block)
 	{
-		nint page = block & ~(nint)0x3FF;
-		uint index = *(uint*)(page + 0x1C);
-		if (index >= *(uint*)(allocator + ChunkCountOffset))
+		AllocatorPool* pool = (AllocatorPool*)allocator;
+		nint page = block & ~PageMask;
+		uint index = *(uint*)(page + PageChunkIndexOffset);
+		if (index >= pool->ChunkCount)
 			return false;
 
-		nint chunk = *(nint*)(*(nint*)(allocator + ChunkTableOffset) + 0x10 + (index * 0x30));
-		return chunk != 0 && (ulong)(block - chunk) < 0x4000;
+		nint chunk = *(nint*)((nint)pool->Chunks + (index * ChunkStride) + ChunkBlockOffset);
+		return chunk != 0 && (ulong)(block - chunk) < ChunkSize;
 	}
 
 	public void Dispose()

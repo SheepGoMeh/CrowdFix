@@ -1,17 +1,20 @@
 using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 
 using Dalamud.Hooking;
 
+using FFXIVClientStructs.FFXIV.Client.Graphics;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Culling;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 
 namespace CrowdFix.Fixes;
 
 /// <summary>
-/// A parallel-for join (JobListArgArrayAndIndex.vf3, FUN_140062300) waits until every queued task has run: one per
+/// A JobSystem join (JobListArgArrayAndIndex.Wait) waits until every queued task has run: one per
 /// worker, each just a help call, even when the main thread already did every item. With few workers awake that is a
 /// worker wake-up plus ~14 empty tasks, then the main thread's own wake-up. Here the main thread claims and runs the
 /// list's remaining tasks itself from the queue head, exactly as a worker would, then spins briefly before sleeping.
@@ -20,51 +23,19 @@ namespace CrowdFix.Fixes;
 /// </summary>
 public unsafe class JoinDrain: IDisposable
 {
-	// JobListArgArrayAndIndex.vf3: MOV RCX,[RCX+0x10]; MOV EDX,-1; JMP [WaitForSingleObject]
-	private const string WaitSignature = "48 8B 49 10 BA FF FF FF FF 48 FF 25 ?? ?? ?? ?? CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC 41 B9 01 00 00 00 F0 44 0F C1 49 74";
-	// LEA RCX,[queue lock]; CALL [EnterCriticalSection]; MOV EAX,[queue write index]; ...
-	private const string QueueSignature = "48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 8B 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 8B 0B 0F 57 C9";
-	// TaskManager kick (EeecuteJobList2), shared with BgPrepInline
-	private const string KickSignature = "40 53 57 48 83 EC 58 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 40 48 8B 02";
+	private static readonly int QueueLockOffset = StructOffset.Of<JobQueue>("Lock");
+	private const int PoolContextOffset = 0x38; // what threads pass to tasks: the address of JobPool + 0x38 (ClientStructs TaskManager.cs, JobPool)
+	// JobSystem blocks: u32 item count, items from +0x10. Cells (CallbackJobs): 8 items of 0x20, camera (RenderCallbackJobs): 1 item
+	private static readonly int[] BlockSizes = [0x10 + (8 * 0x20), 0x10 + sizeof(CullingManager.RenderCallbackJobItem)];
 
-	// JobListArgArrayAndIndex: +0xC pending tasks, +0x18/+0x20 completion fn/obj, +0x88 group, +0x90 task thunk
-	private const int PendingOffset = 0x0C;
-	private const int CompletionOffset = 0x18;
-	private const int GroupOffset = 0x88;
-	private const int ThunkOffset = 0x90;
-	private const int GroupListOffset = 0x18; // parallel-for group: its job list
-	// queue: write index, read index, lock at +8, ring of 128 x 0x98 entries at +0x30
-	private const int LockOffset = 0x08;
-	private const int RingOffset = 0x30;
-	private const int EntrySize = 0x98;
-	// entry: +0x38 claim trampoline, +0x40 list, +0x48 claim state, +0x88 optional event
-	private const int PoolContextOffset = 0x38; // what workers pass to tasks: JobPool + 0x38
-	private const int KickContextOffset = 0x40; // same, from the TaskManager
-	// culling groups: cells (CullingManager+0x2168, 272 B blocks), camera (+0x23A8, 80 B blocks)
-	private const int CellGroupOffset = 0x2168;
-	private const int CameraGroupOffset = 0x23A8;
-	private const int BlockCountOffset = 0xB0;
-	private const int ChunksOffset = 0x30;
-	private static readonly int[] BlockSizes = [272, 80];
+	private delegate void WaitDelegate(JobListArgArrayAndIndex* list);
 
-	private delegate void WaitDelegate(nint list);
-
-	private delegate uint KickDelegate(nint taskManager, nint list);
+	private delegate uint KickDelegate(TaskManager* taskManager, JobListInterface* list);
 
 	[DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
 	[DllImport("kernel32.dll")] private static extern void EnterCriticalSection(nint section);
 	[DllImport("kernel32.dll")] private static extern void LeaveCriticalSection(nint section);
 	[DllImport("kernel32.dll")] private static extern bool SetEvent(nint handle);
-
-	/// <summary>
-	/// Job descriptor as filled by JobList vf1: claim function, its object, then 16 bytes the claim function reads.
-	/// </summary>
-	[StructLayout(LayoutKind.Sequential, Size = 0x20)]
-	private struct JobDescriptor
-	{
-		public nint Claim;
-		public nint Owner;
-	}
 
 	/// <summary>
 	/// Holds its best choice. While measuring, cycles through every choice frame by frame (same scene for all), then
@@ -110,11 +81,7 @@ public unsafe class JoinDrain: IDisposable
 	private readonly Hook<WaitDelegate>? waitHook;
 	private readonly Hook<KickDelegate>? kickHook;
 	private readonly nint waitFunction;
-	private readonly nint* cullingManager;
-	private readonly uint* queueWrite;
-	private readonly uint* queueRead;
-	private readonly nint queueLock;
-	private readonly byte* ring;
+	private readonly JobQueue* queue;
 
 	// spin before sleeping (us); max items run inline, per culling group
 	private readonly Tuner spin = new(0, 10, 20, 30, 40, 60);
@@ -130,7 +97,7 @@ public unsafe class JoinDrain: IDisposable
 
 	private bool drain;
 	private uint mainThreadId;
-	private nint poolContext;
+	private void* poolContext;
 	private long waitTicks;
 	private int waits;
 
@@ -144,29 +111,16 @@ public unsafe class JoinDrain: IDisposable
 	{
 		try
 		{
-			nint queue = Service.SigScanner.ScanText(QueueSignature);
-			this.queueWrite = (uint*)(queue + 19 + Marshal.ReadInt32(queue, 15));
-			this.queueRead = this.queueWrite + 1;
-			this.queueLock = queue + 7 + Marshal.ReadInt32(queue, 3);
-			this.ring = (byte*)this.queueWrite + RingOffset;
-			if (this.queueLock != (nint)this.queueWrite + LockOffset)
-			{
-				this.Status = "Unavailable (unexpected queue layout)";
-				return;
-			}
-
-			nint getter = Service.SigScanner.ScanText(CullPerItemClaim.CullingManagerSignature);
-			this.cullingManager = (nint*)(getter + 7 + *(int*)(getter + 3));
-
-			this.waitFunction = Service.SigScanner.ScanText(WaitSignature);
+			this.queue = JobQueue.Instance();
+			this.waitFunction = (nint)JobListArgArrayAndIndex.StaticVirtualTablePointer->Wait;
 			this.waitHook = Service.GameInteropProvider.HookFromAddress<WaitDelegate>(this.waitFunction, this.WaitDetour);
 			this.kickHook = Service.GameInteropProvider.HookFromAddress<KickDelegate>(
-				Service.SigScanner.ScanText(KickSignature), this.KickDetour);
+				(nint)TaskManager.Addresses.ScheduleJobList.Value, this.KickDetour);
 			this.Available = true;
 		}
 		catch (Exception e)
 		{
-			this.Status = "Unavailable (signature not found)";
+			this.Status = "Unavailable (function not resolved)";
 			Service.PluginLog.Warning(e, "JoinDrain unavailable");
 		}
 	}
@@ -195,7 +149,7 @@ public unsafe class JoinDrain: IDisposable
 			return;
 		}
 
-		this.poolContext = (nint)(&taskManager->Pool) + PoolContextOffset;
+		this.poolContext = (byte*)&taskManager->Pool + PoolContextOffset;
 		this.mainThreadId = GetCurrentThreadId();
 		this.drain = drainJoins;
 		Array.Clear(this.kickStart);
@@ -256,7 +210,7 @@ public unsafe class JoinDrain: IDisposable
 		Array.Clear(this.kickStart);
 	}
 
-	private void WaitDetour(nint list)
+	private void WaitDetour(JobListArgArrayAndIndex* list)
 	{
 		if (GetCurrentThreadId() != this.mainThreadId || !this.IsGroupList(list))
 		{
@@ -268,15 +222,15 @@ public unsafe class JoinDrain: IDisposable
 		long start = measuring == this.spin ? Stopwatch.GetTimestamp() : 0;
 		if (this.drain)
 		{
-			int* pending = (int*)(list + PendingOffset);
-			if (Volatile.Read(ref *pending) > 0)
+			ref int pending = ref list->PendingTasks;
+			if (Volatile.Read(ref pending) > 0)
 				this.RunQueuedTasks(list);
 
 			// clock only read while still waiting
-			if (Volatile.Read(ref *pending) > 0 && this.spin.Current > 0)
+			if (Volatile.Read(ref pending) > 0 && this.spin.Current > 0)
 			{
 				long until = Stopwatch.GetTimestamp() + (Stopwatch.Frequency * this.spin.Current / 1_000_000);
-				while (Volatile.Read(ref *pending) > 0 && Stopwatch.GetTimestamp() < until)
+				while (Volatile.Read(ref pending) > 0 && Stopwatch.GetTimestamp() < until)
 					Thread.SpinWait(16);
 			}
 		}
@@ -293,7 +247,7 @@ public unsafe class JoinDrain: IDisposable
 			return;
 		}
 
-		int group = this.GroupOf(list);
+		int group = this.GroupOf((JobListInterface*)list);
 		if (group >= 0 && this.kickStart[group] != 0)
 		{
 			this.groupTicks[group] += end - this.kickStart[group];
@@ -305,7 +259,7 @@ public unsafe class JoinDrain: IDisposable
 	/// <summary>
 	/// Main thread, job workers, the action timeline thread and bone physics all kick: keep the filter cheap.
 	/// </summary>
-	private uint KickDetour(nint taskManager, nint list)
+	private uint KickDetour(TaskManager* taskManager, JobListInterface* list)
 	{
 		if (GetCurrentThreadId() != this.mainThreadId)
 			return this.kickHook!.Original(taskManager, list);
@@ -325,34 +279,32 @@ public unsafe class JoinDrain: IDisposable
 		return result;
 	}
 
-	private uint Kick(nint taskManager, nint list, int group)
+	private uint Kick(TaskManager* taskManager, JobListInterface* list, int group)
 	{
 		int limit = this.inlineLimit[group].Current;
-		if (limit == 0 || !HasAtMostItems(*(nint*)(list + GroupOffset), BlockSizes[group], limit))
+		if (limit == 0 || !HasAtMostItems((JobSystem*)((JobListArgArrayAndIndex*)list)->Object, BlockSizes[group], limit))
 			return this.kickHook!.Original(taskManager, list);
 
-		nint* vtable = *(nint**)list;
-		if (((delegate* unmanaged<nint, uint>)vtable[4])(list) == 0) // task count
+		if (list->GetTaskCount() == 0)
 			return 0;
 
-		((delegate* unmanaged<nint, void>)vtable[2])(list); // Prepare: waits for the previous run, resets counters
-		JobDescriptor descriptor;
-		((delegate* unmanaged<nint, JobDescriptor*, JobDescriptor*>)vtable[1])(list, &descriptor);
+		list->Prepare(); // waits for the previous run, resets counters
+		JobListInterface.JobDescriptor descriptor;
+		list->GetJob(&descriptor);
 
 		// Same steps as InnerThread.Run: the first help task claims every item, the rest only count down.
 		while (true)
 		{
-			nint* argument = null;
+			void* argument = null;
 			int remaining = 0;
-			nint task = ((delegate* unmanaged<nint, nint, nint**, int*, nint>)descriptor.Claim)(
-				descriptor.Owner, (nint)(&descriptor) + 0x10, &argument, &remaining);
+			nint task = (nint)descriptor.Invoker(descriptor.Object, &descriptor.Function, &argument, &remaining);
 			if (task == 0)
 				break;
 
 			nint* taskVtable = *(nint**)task;
-			nint context = taskManager + KickContextOffset;
+			nint context = (nint)((byte*)&taskManager->Pool + PoolContextOffset);
 			if (argument != null)
-				((delegate* unmanaged<nint, nint, nint, void>)taskVtable[2])(task, context, *argument);
+				((delegate* unmanaged<nint, nint, nint, void>)taskVtable[2])(task, context, *(nint*)argument);
 			else
 				((delegate* unmanaged<nint, nint, void>)taskVtable[1])(task, context);
 
@@ -366,41 +318,41 @@ public unsafe class JoinDrain: IDisposable
 	/// <summary>
 	/// Only parallel-for group lists: help tasks, no completion callback.
 	/// </summary>
-	private bool IsGroupList(nint list)
+	private bool IsGroupList(JobListArgArrayAndIndex* list)
 	{
-		if ((*(nint**)list)[3] != this.waitFunction)
+		if ((nint)list->VirtualTable->Wait != this.waitFunction)
 			return false;
 
-		nint group = *(nint*)(list + GroupOffset);
-		nint thunk = *(nint*)(list + ThunkOffset);
-		return group != 0 && *(nint*)(group + GroupListOffset) == list &&
-		       *(nint*)(list + CompletionOffset) == 0 && *(nint*)(list + CompletionOffset + 8) == 0 &&
+		JobSystem* group = (JobSystem*)list->Object;
+		nint thunk = *(nint*)list->Thunk;
+		return group != null && group->JobList == list &&
+		       list->CompletionFunction == null && list->CompletionObject == null &&
 		       thunk != 0 && *(byte*)thunk == 0xE9;
 	}
 
 	/// <summary>
 	/// 0 cells, 1 camera, -1 anything else.
 	/// </summary>
-	private int GroupOf(nint list)
+	private int GroupOf(JobListInterface* list)
 	{
-		nint manager = *this.cullingManager;
-		if (manager == 0 || (*(nint**)list)[3] != this.waitFunction)
+		CullingManager* manager = CullingManager.Instance();
+		if (manager == null || (nint)((JobListArgArrayAndIndex*)list)->VirtualTable->Wait != this.waitFunction)
 			return -1;
 
-		nint group = *(nint*)(list + GroupOffset);
-		return group == manager + CellGroupOffset ? 0 : group == manager + CameraGroupOffset ? 1 : -1;
+		JobSystem* group = (JobSystem*)((JobListArgArrayAndIndex*)list)->Object;
+		return group == &manager->CallbackJobs ? 0 : group == &manager->RenderCallbackJobs ? 1 : -1;
 	}
 
 	/// <summary>
 	/// Item counts as the help functions read them: u32 at the start of each block, 32 blocks per chunk.
 	/// </summary>
-	private static bool HasAtMostItems(nint group, int blockSize, int limit)
+	private static bool HasAtMostItems(JobSystem* group, int blockSize, int limit)
 	{
-		uint blocks = *(uint*)(group + BlockCountOffset);
+		uint blocks = group->BlockCount;
 		long items = 0;
 		for (uint block = 0; block < blocks; block++)
 		{
-			nint chunk = *(nint*)(group + ChunksOffset + (8 * (block >> 5)));
+			nint chunk = (nint)group->BlockChunks[(int)(block >> 5)].Value;
 			items += *(uint*)(chunk + (blockSize * (block & 31)));
 			if (items > limit)
 				return false;
@@ -412,43 +364,42 @@ public unsafe class JoinDrain: IDisposable
 	/// <summary>
 	/// Same steps as InnerThread.Run, but only while this list's entry is the queue head.
 	/// </summary>
-	private void RunQueuedTasks(nint list)
+	private void RunQueuedTasks(JobListArgArrayAndIndex* list)
 	{
+		nint queueLock = (nint)this.queue + QueueLockOffset;
 		while (true)
 		{
-			nint* argument = null;
+			void* argument = null;
 			int remaining = 0;
 			nint task;
 
-			EnterCriticalSection(this.queueLock);
-			uint read = *this.queueRead;
-			byte* entry = this.ring + (read * EntrySize);
-			if (read == *this.queueWrite || *(nint*)(entry + 0x40) != list)
+			EnterCriticalSection(queueLock);
+			uint read = this.queue->ReadIndex;
+			JobQueue.JobQueueListData* entry = (JobQueue.JobQueueListData*)Unsafe.AsPointer(ref this.queue->Entries[(int)read]);
+			if (read == this.queue->WriteIndex || entry->Job.Object != list)
 			{
-				LeaveCriticalSection(this.queueLock);
+				LeaveCriticalSection(queueLock);
 				return;
 			}
 
-			task = ((delegate* unmanaged<nint, nint, nint**, int*, nint>)*(nint*)(entry + 0x38))(
-				list, (nint)(entry + 0x48), &argument, &remaining);
+			task = (nint)entry->Job.Invoker(list, &entry->Job.Function, &argument, &remaining);
 			if (task == 0 || remaining == 0)
 			{
-				nint* done = *(nint**)(entry + 0x88);
-				if (done != null)
-					SetEvent(*done);
+				if (entry->CompletionEvent != null)
+					SetEvent(*entry->CompletionEvent);
 
-				*this.queueRead = (read + 1) & 0x7F;
+				this.queue->ReadIndex = (read + 1) % (uint)this.queue->Entries.Length;
 			}
 
-			LeaveCriticalSection(this.queueLock);
+			LeaveCriticalSection(queueLock);
 			if (task == 0)
 				return;
 
 			nint* taskVtable = *(nint**)task;
 			if (argument != null)
-				((delegate* unmanaged<nint, nint, nint, void>)taskVtable[2])(task, this.poolContext, *argument);
+				((delegate* unmanaged<nint, void*, nint, void>)taskVtable[2])(task, this.poolContext, *(nint*)argument);
 			else
-				((delegate* unmanaged<nint, nint, void>)taskVtable[1])(task, this.poolContext);
+				((delegate* unmanaged<nint, void*, void>)taskVtable[1])(task, this.poolContext);
 
 			if (remaining == 0)
 				return;

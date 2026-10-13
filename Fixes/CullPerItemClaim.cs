@@ -2,38 +2,39 @@ using System;
 
 using Dalamud.Hooking;
 
+using FFXIVClientStructs.FFXIV.Client.Graphics;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Culling;
+
 namespace CrowdFix.Fixes;
 
 /// <summary>
-/// The per-view cell culling group (CullingManager+0x2168) and the culling setup tail group (+0x20A8) hand out work
+/// The per-view cell culling group (CullingManager.CallbackJobs) and the culling setup tail group (CullingJobs) hand out work
 /// in blocks of up to 8 items. With ~20 cells per view only ~3 threads get any, and the main thread then waits for
 /// the slowest block. Both groups already have the engine's per-item claim variant (one item at a time from a flat
 /// counter); this routes their block help function to it, on workers and the main thread alike.
+/// JobSystem.ClaimPerItem cannot be used for this: only the main thread reads it, workers run the help stub picked when
+/// the job list was created.
 /// </summary>
 public unsafe class CullPerItemClaim: IDisposable
 {
-	// in FUN_14024b610: ADD RCX,0x2168; LEA R8,[cell job]; MOVZX R9D,R12B; MOV RDX,RSI; CALL fork-join
+	// The fork-joins and their help functions are not in ClientStructs.
+	// cell culling: ADD RCX,0x2168; LEA R8,[cell job]; MOVZX R9D,R12B; MOV RDX,RSI; CALL fork-join
 	private const string CellJoinSignature = "48 81 C1 68 21 00 00 4C 8D 05 ?? ?? ?? ?? 45 0F B6 CC 48 8B D6 E8";
 	private const int CellJoinCall = 21;
-	// in FUN_14024cf50: LEA RCX,[RSI+0x20A8]; MOV R9B,1; LEA R8,[job]; MOV RDX,RSI; CALL fork-join
+	// culling setup: LEA RCX,[RSI+0x20A8]; MOV R9B,1; LEA R8,[job]; MOV RDX,RSI; CALL fork-join
 	private const string SetupJoinSignature = "48 8D 8E A8 20 00 00 41 B1 01 4C 8D 05 ?? ?? ?? ?? 48 8B D6 E8";
 	private const int SetupJoinCall = 20;
-	// call to FUN_1402ba8f0, which starts with MOV RAX,[g_CullingManager]
-	internal const string CullingManagerSignature = "E8 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 83 60 ?? ?? E8";
 
-	private const int CellGroupOffset = 0x2168;
-	private const int SetupGroupOffset = 0x20A8;
 	// fork-join layout: JZ +7 at +0x8E, then CALL per-item help (+0x90), CALL block help (+0x97)
 	private const int PerItemCall = 0x90;
 	private const int BlockCall = 0x97;
 
-	private delegate void HelpDelegate(nint group);
+	private delegate void HelpDelegate(JobSystem* group);
 
-	private readonly nint* cullingManager;
 	private readonly Hook<HelpDelegate>? cellHelpHook;
 	private readonly Hook<HelpDelegate>? setupHelpHook;
-	private readonly delegate* unmanaged<nint, void> cellPerItem;
-	private readonly delegate* unmanaged<nint, void> setupPerItem;
+	private readonly delegate* unmanaged<JobSystem*, void> cellPerItem;
+	private readonly delegate* unmanaged<JobSystem*, void> setupPerItem;
 
 	public bool Available { get; }
 
@@ -45,9 +46,6 @@ public unsafe class CullPerItemClaim: IDisposable
 	{
 		try
 		{
-			nint getter = Service.SigScanner.ScanText(CullingManagerSignature);
-			this.cullingManager = (nint*)(getter + 7 + *(int*)(getter + 3));
-
 			nint cellJoin = CallTarget(Service.SigScanner.ScanText(CellJoinSignature) + CellJoinCall);
 			nint setupJoin = CallTarget(Service.SigScanner.ScanText(SetupJoinSignature) + SetupJoinCall);
 			if (!HasHelpCalls(cellJoin) || !HasHelpCalls(setupJoin))
@@ -56,8 +54,8 @@ public unsafe class CullPerItemClaim: IDisposable
 				return;
 			}
 
-			this.cellPerItem = (delegate* unmanaged<nint, void>)CallTarget(cellJoin + PerItemCall);
-			this.setupPerItem = (delegate* unmanaged<nint, void>)CallTarget(setupJoin + PerItemCall);
+			this.cellPerItem = (delegate* unmanaged<JobSystem*, void>)CallTarget(cellJoin + PerItemCall);
+			this.setupPerItem = (delegate* unmanaged<JobSystem*, void>)CallTarget(setupJoin + PerItemCall);
 			this.cellHelpHook = Service.GameInteropProvider.HookFromAddress<HelpDelegate>(
 				CallTarget(cellJoin + BlockCall), this.CellHelpDetour);
 			this.setupHelpHook = Service.GameInteropProvider.HookFromAddress<HelpDelegate>(
@@ -100,17 +98,17 @@ public unsafe class CullPerItemClaim: IDisposable
 		this.Status = enabled ? "On" : "Off";
 	}
 
-	private void CellHelpDetour(nint group)
+	private void CellHelpDetour(JobSystem* group)
 	{
-		if (group == *this.cullingManager + CellGroupOffset)
+		if (group == &CullingManager.Instance()->CallbackJobs)
 			this.cellPerItem(group);
 		else
 			this.cellHelpHook!.Original(group);
 	}
 
-	private void SetupHelpDetour(nint group)
+	private void SetupHelpDetour(JobSystem* group)
 	{
-		if (group == *this.cullingManager + SetupGroupOffset)
+		if (group == &CullingManager.Instance()->CullingJobs)
 			this.setupPerItem(group);
 		else
 			this.setupHelpHook!.Original(group);

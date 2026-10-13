@@ -1,31 +1,31 @@
 using System;
 using System.Runtime.InteropServices;
 
+using FFXIVClientStructs.FFXIV.Client.Graphics.Culling;
+
 namespace CrowdFix.Fixes;
 
 /// <summary>
-/// The culling setup (FUN_14024af70, ~6 calls per frame) zeroes the whole per-object view visibility table
-/// (CullingManager+0x20): 40,960 object slots x 16 bytes = 640 KB per call, however few objects exist.
-/// This rewrites the loop count so only slots up to the highest object slot ever used (from the object bitmask at
-/// CullingManager+0x18) are cleared. Slots above that mark have never been written, so they are still zero.
+/// The culling setup (~6 calls per frame) zeroes the whole per-object view visibility table
+/// (CullingManager.Visibility): 40,960 object slots x 16 bytes = 640 KB per call, however few objects exist.
+/// This rewrites the loop count so only slots up to the highest object slot ever used (from
+/// CullingManager.ObjectSlotMask) are cleared. Slots above that mark have never been written, so they are still zero.
 /// </summary>
 public unsafe class CullingClearTrim: IDisposable
 {
+	// The culling setup is not in ClientStructs.
 	// MOV ECX,0xA000; MOV R14,[RSP+..]; MOV R13,[RSP+..]; MOV R12,[RSP+..] (count of 16 byte stores)
 	private const string ClearCountSignature = "B9 00 A0 00 00 4C 8B B4 24 ?? ?? ?? ?? 4C 8B AC 24 ?? ?? ?? ?? 4C 8B A4 24";
-	// call to FUN_1402ba8f0, which starts with MOV RAX,[g_CullingManager]
-	private const string CullingManagerSignature = "E8 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 83 60 ?? ?? E8";
 
-	private const uint FullCount = 0xA000;
-	private const int MaskWords = 0x500;
-	private const int ObjectsPerWord = 32;
+	private const uint FullCount = 0xA000; // object slots, see CullingManager.Objects
+	private const int ObjectsPerWord = 32; // bits per CullingManager.ObjectSlotMask word
+	private const int MaskWords = (int)FullCount / ObjectsPerWord;
 
 	[DllImport("kernel32.dll")] private static extern bool VirtualProtect(nint address, nuint size, uint protect, out uint oldProtect);
 	[DllImport("kernel32.dll")] private static extern bool FlushInstructionCache(nint process, nint address, nuint size);
 	[DllImport("kernel32.dll")] private static extern nint GetCurrentProcess();
 
 	private readonly uint* clearCount;
-	private readonly nint* cullingManager;
 
 	private int highestWord = -1;
 	private bool enabled;
@@ -43,8 +43,6 @@ public unsafe class CullingClearTrim: IDisposable
 		try
 		{
 			this.clearCount = (uint*)(Service.SigScanner.ScanText(ClearCountSignature) + 1);
-			nint getter = Service.SigScanner.ScanText(CullingManagerSignature);
-			this.cullingManager = (nint*)(getter + 7 + *(int*)(getter + 3));
 			this.Available = *this.clearCount == FullCount;
 			if (!this.Available)
 				this.Status = "Unavailable (unexpected clear count)";
@@ -76,10 +74,11 @@ public unsafe class CullingClearTrim: IDisposable
 	/// </summary>
 	public void Update()
 	{
-		if (!this.enabled || *this.cullingManager == 0)
+		CullingManager* manager = CullingManager.Instance();
+		if (!this.enabled || manager == null)
 			return;
 
-		uint* mask = *(uint**)(*this.cullingManager + 0x18);
+		uint* mask = manager->ObjectSlotMask;
 		if (mask == null)
 			return;
 

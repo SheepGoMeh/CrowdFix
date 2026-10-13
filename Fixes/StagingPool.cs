@@ -3,11 +3,13 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Threading;
 
+using FFXIVClientStructs.FFXIV.Client.Graphics;
+
 namespace CrowdFix.Fixes;
 
 /// <summary>
 /// Every dynamic buffer write during draw building (FUN_14021dac0) frees its previous staging block and allocates a
-/// new one through the graphics allocator at AllocatorManager+0x10. Its Alloc/Free go to a small-object allocator
+/// new one through AllocatorManager.TempAllocator. Its Allocate/Free go to a small-object allocator (AllocatorPool)
 /// whose Free takes a global lock and, for larger blocks, calls the backing allocator (second global lock, coalescing
 /// and a region re-sort) while still holding it, so the draw-building job threads spend about a third of their time
 /// waiting on each other.
@@ -18,18 +20,15 @@ namespace CrowdFix.Fixes;
 /// </summary>
 public unsafe class StagingPool: IDisposable
 {
-	// MOV RAX,[g_AllocatorManager]; ...; MOV RCX,[RAX+0x10]; MOV RAX,[RCX]; CALL [RAX+0x10] (in the buffer write lock)
-	private const string ManagerSignature = "48 8B 05 ?? ?? ?? ?? 41 B8 ?? ?? ?? ?? 8B D7 48 8B 48 ?? 48 8B 01 FF 50 ?? 48 89 83";
-
 	// Expected wrapper code: Alloc = MOV EAX,1; LOCK XADD [RCX+0x210],EAX; ...  Free = ADD RCX,0x90; MOV RAX,[RCX]; JMP [RAX+0x20]
 	private static readonly byte[] AllocWrapperCode = [0xB8, 0x01, 0x00, 0x00, 0x00, 0xF0, 0x0F, 0xC1, 0x81, 0x10, 0x02, 0x00, 0x00];
 	private static readonly byte[] FreeWrapperCode = [0x48, 0x81, 0xC1, 0x90, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x01, 0x48, 0xFF, 0x60, 0x20];
 	private static readonly byte[] SizeWrapperCode = [0x48, 0x81, 0xC1, 0x90, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x01, 0x48, 0xFF, 0x60, 0x48];
 
-	private const int TerminateSlot = 1;
-	private const int AllocSlot = 2;
-	private const int FreeSlot = 4;
-	private const int SizeSlot = 9;
+	private static readonly int TerminateSlot = StructOffset.Slot<IAllocator.IAllocatorVirtualTable>(nameof(IAllocator.Cleanup));
+	private static readonly int AllocSlot = StructOffset.Slot<IAllocator.IAllocatorVirtualTable>(nameof(IAllocator.Allocate));
+	private static readonly int FreeSlot = StructOffset.Slot<IAllocator.IAllocatorVirtualTable>(nameof(IAllocator.Free));
+	private static readonly int SizeSlot = StructOffset.Slot<IAllocator.IAllocatorVirtualTable>(nameof(IAllocator.GetSize));
 	private const int AllocCounterOffset = 0x210;
 	private const int DirectMarkerOffset = 0x10;
 	private const ushort DirectMarker = 0xFFFF;
@@ -45,7 +44,6 @@ public unsafe class StagingPool: IDisposable
 
 	[DllImport("kernel32.dll")] private static extern bool VirtualProtect(nint address, nuint size, uint protect, out uint oldProtect);
 
-	private readonly nint* allocatorManager;
 	private readonly Bucket[] buckets = new Bucket[MaxClassShift - MinClassShift + 1];
 
 	// kept alive for the lifetime of the swapped vtable entries
@@ -86,17 +84,7 @@ public unsafe class StagingPool: IDisposable
 		this.allocDetour = this.AllocDetour;
 		this.freeDetour = this.FreeDetour;
 
-		try
-		{
-			nint manager = Service.SigScanner.ScanText(ManagerSignature);
-			this.allocatorManager = (nint*)(manager + 7 + *(int*)(manager + 3));
-			this.Available = true;
-		}
-		catch (Exception e)
-		{
-			this.Status = "Unavailable (signature not found)";
-			Service.PluginLog.Warning(e, "StagingPool unavailable");
-		}
+		this.Available = true;
 	}
 
 	/// <summary>
@@ -115,8 +103,8 @@ public unsafe class StagingPool: IDisposable
 			return;
 		}
 
-		nint manager = *this.allocatorManager;
-		nint allocator = manager == 0 ? 0 : *(nint*)(manager + 0x10);
+		AllocatorManager* manager = AllocatorManager.Instance();
+		nint allocator = manager == null ? 0 : (nint)manager->TempAllocator;
 		if (allocator == 0)
 		{
 			this.Status = "Waiting for the graphics allocator";

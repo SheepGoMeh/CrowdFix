@@ -9,25 +9,22 @@ using FFXIVClientStructs.FFXIV.Client.System.Framework;
 namespace CrowdFix.Fixes;
 
 /// <summary>
-/// Every job submit calls the pool's wake-all (FUN_140060b70), which SetEvents every sleeping worker from the
+/// Every job submit calls the pool's wake-all (JobPool.WakeAllThreads), which SetEvents every sleeping worker from the
 /// submitting thread: up to 15 syscalls per submit, ~100 submits per frame on the main thread.
 /// Here the submitter wakes one sleeping worker, and each worker that wakes while the queue still has work wakes
-/// the next one. Same counters as the game (InnerThread +0x35 skip, +0x38 wake count, +0x40 event).
+/// the next one. Same counters as the game (InnerThread +0x35 skip, PendingWakes, EventHandle2).
 /// </summary>
 public unsafe class JobWakeChain: IDisposable
 {
-	// LEA RCX,[queue lock]; CALL [EnterCriticalSection]; MOV EAX,[queue write index]; ...
-	private const string QueueSignature = "48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 8B 05 ?? ?? ?? ?? 4C 8D 0D ?? ?? ?? ?? 48 8B 0B 0F 57 C9";
-	private const string WakeAllSignature = "E8 ?? ?? ?? ?? 48 8B 4C 24 ?? BA ?? ?? ?? ?? FF 15";
 	private const uint Infinite = 0xFFFFFFFF;
+	private const int SkipWakeOffset = 0x35; // wakes skip the thread while set (ClientStructs TaskManager.cs, JobPool.InnerThread)
 
 	private delegate uint WaitForSingleObjectDelegate(nint handle, uint milliseconds);
 	private delegate void WakeAllDelegate(nint pool);
 
 	[DllImport("kernel32.dll")] private static extern bool SetEvent(nint handle);
 
-	private readonly uint* queueWrite;
-	private readonly uint* queueRead;
+	private readonly JobQueue* queue;
 	private readonly Hook<WaitForSingleObjectDelegate>? waitHook;
 	private readonly Hook<WakeAllDelegate>? wakeAllHook;
 
@@ -46,18 +43,16 @@ public unsafe class JobWakeChain: IDisposable
 	{
 		try
 		{
-			nint queue = Service.SigScanner.ScanText(QueueSignature);
-			this.queueWrite = (uint*)(queue + 19 + Marshal.ReadInt32(queue, 15));
-			this.queueRead = this.queueWrite + 1; // read index sits right after the write index
+			this.queue = JobQueue.Instance();
 			this.waitHook = Service.GameInteropProvider.HookFromImport<WaitForSingleObjectDelegate>(
 				null, "KERNEL32.DLL", "WaitForSingleObject", 0, this.WaitDetour);
 			this.wakeAllHook = Service.GameInteropProvider.HookFromAddress<WakeAllDelegate>(
-				Service.SigScanner.ScanText(WakeAllSignature), this.WakeAllDetour);
+				(nint)TaskManager.JobPool.Addresses.WakeAllThreads.Value, this.WakeAllDetour);
 			this.Available = true;
 		}
 		catch (Exception e)
 		{
-			this.Status = "Unavailable (signature not found)";
+			this.Status = "Unavailable (function not resolved)";
 			Service.PluginLog.Warning(e, "JobWakeChain unavailable");
 		}
 	}
@@ -107,11 +102,11 @@ public unsafe class JobWakeChain: IDisposable
 
 		for (int i = 0; i < pool->ThreadCount; i++)
 		{
-			nint worker = (nint)pool->Threads[i];
-			if (*(byte*)(worker + 0x35) != 0)
+			TaskManager.JobPool.InnerThread* worker = pool->Threads[i];
+			if (*((byte*)worker + SkipWakeOffset) != 0)
 				continue;
 
-			ref int wakeCount = ref *(int*)(worker + 0x38);
+			ref int wakeCount = ref worker->PendingWakes;
 			int current = Volatile.Read(ref wakeCount);
 			if (current >= 2)
 				continue;
@@ -122,7 +117,7 @@ public unsafe class JobWakeChain: IDisposable
 
 			if (Interlocked.Increment(ref wakeCount) == 1)
 			{
-				SetEvent(((TaskManager.JobPool.InnerThread*)worker)->EventHandle2);
+				SetEvent(worker->EventHandle2);
 				woken++;
 			}
 		}
@@ -138,7 +133,7 @@ public unsafe class JobWakeChain: IDisposable
 	private uint WaitDetour(nint handle, uint milliseconds)
 	{
 		uint result = this.waitHook!.Original(handle, milliseconds);
-		if (result == 0 && milliseconds == Infinite && *this.queueRead != *this.queueWrite &&
+		if (result == 0 && milliseconds == Infinite && this.queue->ReadIndex != this.queue->WriteIndex &&
 		    Array.IndexOf(this.workerEvents, handle) >= 0)
 			WakeOne(this.pool, false);
 

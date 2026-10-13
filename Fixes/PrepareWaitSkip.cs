@@ -1,21 +1,20 @@
 using System;
 
+using FFXIVClientStructs.FFXIV.Client.System.Framework;
+
 namespace CrowdFix.Fixes;
 
 /// <summary>
-/// Every job kick prepares its job list (vf2), which waits for the previous run through vf3 and then calls
+/// Every job kick prepares its job list (JobListInterface.Prepare), which waits for the previous run through Wait and then calls
 /// WaitForSingleObject on the same manual-reset event a second time before resetting it. The event can only be reset
 /// by this function, so the second wait always returns at once: ~75 wasted syscalls per frame on the main thread.
-/// This turns that call into a jump over it, in both Prepare variants (array lists and single-item lists).
+/// This turns that call into a jump over it, in both Prepare variants (JobListArgArrayAndIndex and JobListNoArg).
 /// </summary>
 public unsafe class PrepareWaitSkip: IDisposable
 {
-	// JobListArgArrayAndIndex.vf2: CALL [RAX+0x18]; ...; MOV RCX,[RBX+0x10]; MOV EDX,-1; CALL [WaitForSingleObject]
-	private const string ArrayPrepareSignature = "40 53 48 83 EC 20 48 8B 01 48 8B D9 FF 50 18 33 D2 8B C2 87 43 7C 87 93 A0 00 00 00 48 8B 4B 10 BA FF FF FF FF FF 15";
+	// Prepare: CALL [RAX+0x18] (Wait); reset counters; MOV RCX,[RBX+0x10]; MOV EDX,-1; CALL [WaitForSingleObject]
 	private const int ArrayCallOffset = 0x25;
-	// Single-item job list vf2, same shape
-	private const string SinglePrepareSignature = "40 53 48 83 EC 20 48 8B 01 48 8B D9 FF 50 18 33 C0 BA FF FF FF FF 87 43 74 48 8B 4B 10 FF 15";
-	private const int SingleCallOffset = 0x1D;
+	private const int NoArgCallOffset = 0x1D;
 
 	private const ushort CallIndirect = 0x15FF; // FF 15
 	private const ushort JumpOver = 0x04EB; // EB 04: skips the rest of the 6 byte call
@@ -33,8 +32,8 @@ public unsafe class PrepareWaitSkip: IDisposable
 	{
 		try
 		{
-			ushort* array = (ushort*)(Service.SigScanner.ScanText(ArrayPrepareSignature) + ArrayCallOffset);
-			ushort* single = (ushort*)(Service.SigScanner.ScanText(SinglePrepareSignature) + SingleCallOffset);
+			ushort* array = (ushort*)((nint)JobListArgArrayAndIndex.StaticVirtualTablePointer->Prepare + ArrayCallOffset);
+			ushort* single = (ushort*)((nint)JobListNoArg.StaticVirtualTablePointer->Prepare + NoArgCallOffset);
 			this.sites = [array, single];
 			this.Available = *array == CallIndirect && *single == CallIndirect;
 			if (!this.Available)
@@ -42,7 +41,7 @@ public unsafe class PrepareWaitSkip: IDisposable
 		}
 		catch (Exception e)
 		{
-			this.Status = "Unavailable (signature not found)";
+			this.Status = "Unavailable (function not resolved)";
 			Service.PluginLog.Warning(e, "PrepareWaitSkip unavailable");
 		}
 	}
