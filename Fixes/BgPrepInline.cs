@@ -18,7 +18,7 @@ public unsafe class BgPrepInline: IDisposable
 {
 	private const int PoolContextOffset = 0x38; // what threads pass to tasks: the address of JobPool + 0x38 (ClientStructs TaskManager.cs, JobPool)
 
-	private delegate uint KickDelegate(nint taskManager, nint jobList);
+	private delegate void KickDelegate(TaskManager* taskManager, JobListInterface* jobList);
 
 	[DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
 
@@ -80,18 +80,20 @@ public unsafe class BgPrepInline: IDisposable
 	/// <summary>
 	/// Main thread, job workers, the action timeline thread and bone physics all kick: keep the filter cheap.
 	/// </summary>
-	private uint KickDetour(nint taskManager, nint jobList)
+	private void KickDetour(TaskManager* taskManager, JobListInterface* jobList)
 	{
-		if (jobList != this.prepList || GetCurrentThreadId() != this.mainThreadId)
-			return this.kickHook!.Original(taskManager, jobList);
+		if ((nint)jobList != this.prepList || GetCurrentThreadId() != this.mainThreadId)
+		{
+			this.kickHook!.Original(taskManager, jobList);
+			return;
+		}
 
-		JobListInterface* list = (JobListInterface*)jobList;
-		if (list->GetTaskCount() == 0)
-			return 0;
+		if (jobList->GetTaskCount() == 0)
+			return;
 
-		list->Prepare(); // waits for the previous run, resets counters
+		jobList->Prepare(); // waits for the previous run, resets counters
 		JobListInterface.JobDescriptor descriptor;
-		list->GetJob(&descriptor);
+		jobList->GetJob(&descriptor);
 
 		// Same steps as InnerThread.Run: claim a task, run it with the pool context.
 		while (true)
@@ -103,7 +105,7 @@ public unsafe class BgPrepInline: IDisposable
 				break;
 
 			nint* taskVtable = *(nint**)task;
-			nint context = (nint)(&((TaskManager*)taskManager)->Pool) + PoolContextOffset;
+			nint context = (nint)(&taskManager->Pool) + PoolContextOffset;
 			if (argument != null)
 				((delegate* unmanaged<nint, nint, nint, void>)taskVtable[2])(task, context, *(nint*)argument);
 			else
@@ -112,8 +114,6 @@ public unsafe class BgPrepInline: IDisposable
 			if (remaining == 0)
 				break;
 		}
-
-		return 1;
 	}
 
 	public void Dispose()

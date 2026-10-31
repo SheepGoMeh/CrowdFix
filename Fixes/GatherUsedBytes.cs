@@ -24,7 +24,7 @@ public unsafe class GatherUsedBytes: IDisposable
 	private const int EntrySize = 16; // u32 sort key, 4 bytes, command pointer
 	private const int SortCall = 0x147; // CALL merge sort inside Context.GatherCommands
 
-	private delegate ulong DriverDelegate(nint device, uint list, byte** cursor, uint* remaining, byte** results, uint* counts, uint* total);
+	private delegate void DriverDelegate(Device* device, uint list, byte** cursor, uint* remaining, byte** results, uint* counts, uint* total);
 
 	private readonly Hook<DriverDelegate>? driverHook;
 	private readonly delegate* unmanaged<byte*, byte*, int, int, void> sort;
@@ -78,13 +78,16 @@ public unsafe class GatherUsedBytes: IDisposable
 	/// <summary>
 	/// Main thread, PostTick, after every producer has been joined.
 	/// </summary>
-	private ulong DriverDetour(nint device, uint list, byte** cursor, uint* remaining, byte** results, uint* counts, uint* total)
+	private void DriverDetour(Device* device, uint list, byte** cursor, uint* remaining, byte** results, uint* counts, uint* total)
 	{
 		if (*cursor == null)
-			return this.driverHook!.Original(device, list, cursor, remaining, results, counts, total);
+		{
+			this.driverHook!.Original(device, list, cursor, remaining, results, counts, total);
+			return;
+		}
 
-		uint contexts = ((Device*)device)->ContextCount;
-		nint contextArray = (nint)((Device*)device)->ContextArray;
+		uint contexts = device->ContextCount;
+		nint contextArray = (nint)device->ContextArray;
 		*total = 0;
 		for (uint i = 0; i < contexts; i++)
 		{
@@ -126,8 +129,6 @@ public unsafe class GatherUsedBytes: IDisposable
 			*cursor = destination + ((long)count * EntrySize);
 			*remaining -= count * EntrySize;
 		}
-
-		return contexts;
 	}
 
 	private static bool IsSorted(byte* entries, uint count)

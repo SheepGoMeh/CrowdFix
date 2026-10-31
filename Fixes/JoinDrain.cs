@@ -30,7 +30,7 @@ public unsafe class JoinDrain: IDisposable
 
 	private delegate void WaitDelegate(JobListArgArrayAndIndex* list);
 
-	private delegate uint KickDelegate(TaskManager* taskManager, JobListInterface* list);
+	private delegate void KickDelegate(TaskManager* taskManager, JobListInterface* list);
 
 	[DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
 	[DllImport("kernel32.dll")] private static extern void EnterCriticalSection(nint section);
@@ -259,34 +259,39 @@ public unsafe class JoinDrain: IDisposable
 	/// <summary>
 	/// Main thread, job workers, the action timeline thread and bone physics all kick: keep the filter cheap.
 	/// </summary>
-	private uint KickDetour(TaskManager* taskManager, JobListInterface* list)
+	private void KickDetour(TaskManager* taskManager, JobListInterface* list)
 	{
-		if (GetCurrentThreadId() != this.mainThreadId)
-			return this.kickHook!.Original(taskManager, list);
-
-		int group = this.GroupOf(list);
+		int group = GetCurrentThreadId() == this.mainThreadId ? this.GroupOf(list) : -1;
 		if (group < 0)
-			return this.kickHook!.Original(taskManager, list);
+		{
+			this.kickHook!.Original(taskManager, list);
+			return;
+		}
 
 		if (this.measuring != this.inlineLimit[group])
-			return this.Kick(taskManager, list, group);
+		{
+			this.Kick(taskManager, list, group);
+			return;
+		}
 
 		// Prepare waits on the same list inside the kick: only the join after it counts
 		long start = Stopwatch.GetTimestamp();
 		this.kickStart[group] = 0;
-		uint result = this.Kick(taskManager, list, group);
+		this.Kick(taskManager, list, group);
 		this.kickStart[group] = start;
-		return result;
 	}
 
-	private uint Kick(TaskManager* taskManager, JobListInterface* list, int group)
+	private void Kick(TaskManager* taskManager, JobListInterface* list, int group)
 	{
 		int limit = this.inlineLimit[group].Current;
 		if (limit == 0 || !HasAtMostItems((JobSystem*)((JobListArgArrayAndIndex*)list)->Object, BlockSizes[group], limit))
-			return this.kickHook!.Original(taskManager, list);
+		{
+			this.kickHook!.Original(taskManager, list);
+			return;
+		}
 
 		if (list->GetTaskCount() == 0)
-			return 0;
+			return;
 
 		list->Prepare(); // waits for the previous run, resets counters
 		JobListInterface.JobDescriptor descriptor;
@@ -311,8 +316,6 @@ public unsafe class JoinDrain: IDisposable
 			if (remaining == 0)
 				break;
 		}
-
-		return 1;
 	}
 
 	/// <summary>
