@@ -70,7 +70,7 @@ public unsafe class ConstantBufferReuse: IDisposable
 	private delegate nint ConstantBufferCacheDelegate(uint* cache, nint context, byte* source, nint* buffer);
 	private delegate void SetConstantBuffersDelegate(nint context, uint start, uint count, nint* buffers);
 
-	internal const string ConstantBufferCacheSignature = "48 89 5C 24 18 56 41 56 41 57 48 83 EC 40 49 8B 18 4C 8D 51 20 49 8B F1 4D 8B F0 4C 8B FA 4C 8B D9";
+	internal const string ConstantBufferCacheSignature = "E8 ?? ?? ?? ?? 48 8B 6C 24 ?? 88 44 37";
 
 	[StructLayout(LayoutKind.Sequential)]
 	private struct BufferDesc
