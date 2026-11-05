@@ -91,7 +91,9 @@ public unsafe class ConstantBufferReuse: IDisposable
 		public uint DepthPitch;
 	}
 
-	private sealed class Entry
+	// Entries live in one array and are referred to by index, 0 meaning none. That keeps the large tables free of references, so
+	// the GC has nothing to scan in them and writing a slot needs no write barrier.
+	private struct Entry
 	{
 		public nint Buffer;
 		public byte* Contents;
@@ -99,7 +101,8 @@ public unsafe class ConstantBufferReuse: IDisposable
 		public uint Width;
 		public uint RingOffset;
 		public uint RingGeneration;
-		public required Stack<Entry> Free;
+		public int Pool;
+		public int NextFree;
 	}
 
 	private struct Slot
@@ -108,28 +111,39 @@ public unsafe class ConstantBufferReuse: IDisposable
 		public uint Count;
 		public uint Width;
 		public uint Generation; // a slot from an older generation is empty, so starting over needs no clearing
-		public Entry? Entry;
+		public int EntryIndex;
 	}
+
+	// Contents are carved from chunks of this size rather than allocated one by one.
+	private const int ContentsChunkBytes = 1024 * 1024;
 
 	// Render thread only. 256 entries by address >> 4 can't collide: the 48 caches are 80 bytes apart, so at most 240 apart here.
 	private readonly nint[] cacheKeys = new nint[256];
 	private readonly BufferDesc[] cacheDescs = new BufferDesc[256];
-	private readonly Stack<Entry>?[] cacheFreeBuffers = new Stack<Entry>?[256];
+	private readonly int[] cachePools = new int[256];
 	private readonly Slot[] table = new Slot[TableSize];
 	private uint generation = 1;
-	private readonly Dictionary<uint, Stack<Entry>> freeBuffers = [];
-	private readonly List<Entry> usedBuffers = [];
-	private readonly List<Entry> allBuffers = [];
+
+	// One pool per buffer width, each a list through Entry.NextFree. There can't be more widths than caches.
+	private readonly Dictionary<uint, int> poolsByWidth = [];
+	private readonly int[] freeHeads = new int[256];
+	private readonly Entry[] entries = new Entry[MaxBuffers + 1];
+	private int entryCount;
+	private readonly int[] usedEntries = new int[MaxBuffers];
+	private int usedCount;
+	private readonly List<nint> contentsChunks = [];
+	private byte* contentsCursor;
+	private uint contentsLeft;
 
 	// Finds the entry behind a buffer the game passes to SetConstantBuffers. Entries are never removed.
 	private readonly nint[] handleKeys = new nint[TableSize];
-	private readonly Entry?[] handleEntries = new Entry?[TableSize];
+	private readonly int[] handleEntries = new int[TableSize];
 
 	// What each stage and slot has bound through the ring. The game can keep a binding over several frames without setting it again.
-	private readonly Entry?[] boundEntries = new Entry?[StageCount * ConstantBufferSlots];
+	private readonly int[] boundEntries = new int[StageCount * ConstantBufferSlots];
 
 	// The last ring binding of each slot, kept when something else is bound over it, so restoring the ring gets the right offset.
-	private readonly Entry?[] lastRingEntries = new Entry?[StageCount * ConstantBufferSlots];
+	private readonly int[] lastRingEntries = new int[StageCount * ConstantBufferSlots];
 	private readonly Hook<SetConstantBuffersDelegate>?[] setHooks = new Hook<SetConstantBuffersDelegate>?[StageCount];
 	private nint rangeContext;
 	private nint ring;
@@ -275,7 +289,7 @@ public unsafe class ConstantBufferReuse: IDisposable
 		long frameCount = this.frames;
 		long passed = Math.Max(1, frameCount - this.lastFrames);
 		this.Status =
-			$"On, {(hitCount - this.lastHits) / passed} reused and {(uploadCount - this.lastUploads) / passed} uploaded per frame, {this.allBuffers.Count} buffers\n" +
+			$"On, {(hitCount - this.lastHits) / passed} reused and {(uploadCount - this.lastUploads) / passed} uploaded per frame, {this.entryCount} buffers\n" +
 			(this.ringActive ? $"Ring on, wrapped {this.ringWraps} times\n" : string.Empty) +
 			$"Contents changed under a reused pointer: {this.changedContents} times, failed calls: {this.failures}";
 		this.lastHits = hitCount;
@@ -317,10 +331,15 @@ public unsafe class ConstantBufferReuse: IDisposable
 	private void StartOver()
 	{
 		this.generation++;
-		foreach (Entry entry in this.usedBuffers)
-			entry.Free.Push(entry);
+		for (int i = 0; i < this.usedCount; i++)
+		{
+			int index = this.usedEntries[i];
+			ref Entry entry = ref this.entries[index];
+			entry.NextFree = this.freeHeads[entry.Pool];
+			this.freeHeads[entry.Pool] = index;
+		}
 
-		this.usedBuffers.Clear();
+		this.usedCount = 0;
 	}
 
 	private nint CacheDetour(uint* cache, nint context, byte* source, nint* buffer)
@@ -341,14 +360,15 @@ public unsafe class ConstantBufferReuse: IDisposable
 		// The way the game's own hit and miss leave these: no change to which slot was used last.
 		nint recentSlot = (nint)(cache[RecentSlotsIndex] & 7);
 		int position = this.FindSlot((nint)data, count, width);
-		Entry? entry = this.table[position].Entry;
+		int entryIndex = this.table[position].EntryIndex;
 		if (this.table[position].Generation == this.generation)
 		{
-			if (new ReadOnlySpan<byte>(entry!.Contents, (int)bytes).SequenceEqual(new ReadOnlySpan<byte>(data, (int)bytes)))
+			ref Entry found = ref this.entries[entryIndex];
+			if (new ReadOnlySpan<byte>(found.Contents, (int)bytes).SequenceEqual(new ReadOnlySpan<byte>(data, (int)bytes)))
 			{
 				this.hits++;
 				cache[HitCounterIndex]++;
-				*buffer = entry.Buffer;
+				*buffer = found.Buffer;
 				return recentSlot;
 			}
 
@@ -356,18 +376,19 @@ public unsafe class ConstantBufferReuse: IDisposable
 		}
 		else
 		{
-			entry = this.Acquire(context, index);
-			if (entry == null)
+			entryIndex = this.Acquire(context, index);
+			if (entryIndex == 0)
 				return this.Fail(cache, context, source, buffer);
 
 			// Acquire can start the table over, which empties the slot found above and maybe earlier ones.
 			position = this.FindSlot((nint)data, count, width);
-			this.table[position] = new Slot { Pointer = (nint)data, Count = count, Width = width, Generation = this.generation, Entry = entry };
+			this.table[position] = new Slot { Pointer = (nint)data, Count = count, Width = width, Generation = this.generation, EntryIndex = entryIndex };
 		}
 
+		ref Entry entry = ref this.entries[entryIndex];
 		Buffer.MemoryCopy(data, entry.Contents, bytes, bytes);
 		entry.Bytes = bytes;
-		if (!(this.ringActive ? this.WriteToRing(context, entry) : UploadToOwnBuffer(context, entry)))
+		if (!(this.ringActive ? this.WriteToRing(context, ref entry) : UploadToOwnBuffer(context, ref entry)))
 		{
 			// This can cut a probe chain short, which at worst uploads a pointer twice.
 			this.table[position].Generation = 0;
@@ -415,10 +436,10 @@ public unsafe class ConstantBufferReuse: IDisposable
 		BufferDesc desc;
 		((delegate* unmanaged<nint, BufferDesc*, void>)(*(nint**)gameBuffer)[GetDescSlot])(gameBuffer, &desc);
 		this.cacheDescs[index] = desc;
-		if (!this.freeBuffers.TryGetValue(desc.ByteWidth, out Stack<Entry>? free))
-			this.freeBuffers[desc.ByteWidth] = free = new Stack<Entry>();
+		if (!this.poolsByWidth.TryGetValue(desc.ByteWidth, out int pool))
+			this.poolsByWidth[desc.ByteWidth] = pool = this.poolsByWidth.Count;
 
-		this.cacheFreeBuffers[index] = free;
+		this.cachePools[index] = pool;
 		this.cacheKeys[index] = (nint)cache;
 		lock (this.knownCaches)
 			this.knownCaches.Add((nint)cache);
@@ -426,43 +447,59 @@ public unsafe class ConstantBufferReuse: IDisposable
 		return true;
 	}
 
-	private Entry? Acquire(nint context, int index)
+	/// <summary>
+	/// Each entry is either free or used once, so the used list can't outgrow MaxBuffers.
+	/// </summary>
+	private int Acquire(nint context, int index)
 	{
-		Stack<Entry> free = this.cacheFreeBuffers[index]!;
-		if (free.Count == 0 && this.allBuffers.Count >= MaxBuffers)
+		int pool = this.cachePools[index];
+		if (this.freeHeads[pool] == 0 && this.entryCount >= MaxBuffers)
 			this.StartOver();
 
-		if (!free.TryPop(out Entry? entry))
-		{
-			if (this.allBuffers.Count >= MaxBuffers)
-				return null;
+		int entry = this.freeHeads[pool];
+		if (entry != 0)
+			this.freeHeads[pool] = this.entries[entry].NextFree;
+		else if (this.entryCount >= MaxBuffers || (entry = this.Create(context, ref this.cacheDescs[index], pool)) == 0)
+			return 0;
 
-			entry = this.Create(context, ref this.cacheDescs[index], free);
-			if (entry == null)
-				return null;
-		}
-
-		this.usedBuffers.Add(entry);
+		this.usedEntries[this.usedCount++] = entry;
 		return entry;
 	}
 
-	private Entry? Create(nint context, ref BufferDesc desc, Stack<Entry> free)
+	private int Create(nint context, ref BufferDesc desc, int pool)
 	{
 		BufferDesc copy = desc;
 		nint created = CreateBuffer(context, &copy);
 		if (created == 0)
-			return null;
+			return 0;
 
-		var entry = new Entry { Buffer = created, Width = desc.ByteWidth, Contents = (byte*)NativeMemory.Alloc(desc.ByteWidth), Free = free };
-		this.allBuffers.Add(entry);
+		int index = ++this.entryCount;
+		this.entries[index] = new Entry { Buffer = created, Width = desc.ByteWidth, Contents = this.AllocateContents(desc.ByteWidth), Pool = pool };
 
 		int position = HandlePosition(created);
 		while (this.handleKeys[position] != 0)
 			position = (position + 1) & (TableSize - 1);
 
-		this.handleEntries[position] = entry;
+		this.handleEntries[position] = index;
 		this.handleKeys[position] = created;
-		return entry;
+		return index;
+	}
+
+	private byte* AllocateContents(uint width)
+	{
+		width = (width + 15) & ~15u;
+		if (width > this.contentsLeft)
+		{
+			uint size = Math.Max(width, ContentsChunkBytes);
+			this.contentsCursor = (byte*)NativeMemory.AlignedAlloc(size, 16);
+			this.contentsLeft = size;
+			this.contentsChunks.Add((nint)this.contentsCursor);
+		}
+
+		byte* contents = this.contentsCursor;
+		this.contentsCursor += width;
+		this.contentsLeft -= width;
+		return contents;
 	}
 
 	private static nint CreateBuffer(nint context, BufferDesc* desc)
@@ -476,7 +513,7 @@ public unsafe class ConstantBufferReuse: IDisposable
 		return result < 0 ? 0 : created;
 	}
 
-	private static bool UploadToOwnBuffer(nint context, Entry entry) =>
+	private static bool UploadToOwnBuffer(nint context, ref Entry entry) =>
 		Write(context, entry.Buffer, MapWriteDiscard, 0, entry.Contents, entry.Bytes);
 
 	private static bool Write(nint context, nint buffer, int mapType, uint offset, byte* data, uint bytes)
@@ -567,10 +604,11 @@ public unsafe class ConstantBufferReuse: IDisposable
 		this.ringActive = false;
 		if (this.lastContext != 0)
 		{
-			foreach (Entry entry in this.allBuffers)
+			for (int i = 1; i <= this.entryCount; i++)
 			{
+				ref Entry entry = ref this.entries[i];
 				if (entry.Bytes != 0)
-					UploadToOwnBuffer(this.lastContext, entry);
+					UploadToOwnBuffer(this.lastContext, ref entry);
 			}
 		}
 
@@ -584,7 +622,7 @@ public unsafe class ConstantBufferReuse: IDisposable
 	/// Render thread. Appends the entry's contents. Running out of room discards the ring, which makes everything still bound
 	/// point at new memory, so whatever is bound is written again right after.
 	/// </summary>
-	private bool WriteToRing(nint context, Entry entry)
+	private bool WriteToRing(nint context, ref Entry entry)
 	{
 		uint size = (Math.Max(entry.Width, RingAlignment) + RingAlignment - 1) & ~(RingAlignment - 1);
 		bool wrapped = this.ringCursor + size > RingBytes;
@@ -613,11 +651,12 @@ public unsafe class ConstantBufferReuse: IDisposable
 		{
 			for (uint slot = 0; slot < ConstantBufferSlots; slot++)
 			{
-				Entry? entry = this.boundEntries[(stage * ConstantBufferSlots) + slot];
-				if (entry == null)
+				int bound = this.boundEntries[(stage * ConstantBufferSlots) + slot];
+				if (bound == 0)
 					continue;
 
-				if (entry.RingGeneration != this.ringGeneration && !this.WriteToRing(context, entry))
+				ref Entry entry = ref this.entries[bound];
+				if (entry.RingGeneration != this.ringGeneration && !this.WriteToRing(context, ref entry))
 				{
 					this.failures++;
 					continue;
@@ -625,13 +664,13 @@ public unsafe class ConstantBufferReuse: IDisposable
 
 				nint buffer = this.ring;
 				uint first = entry.RingOffset / 16;
-				uint constants = ConstantsOf(entry);
+				uint constants = ConstantsOf(ref entry);
 				this.SetRange(stage, slot, 1, &buffer, &first, &constants);
 			}
 		}
 	}
 
-	private static uint ConstantsOf(Entry entry) =>
+	private static uint ConstantsOf(ref Entry entry) =>
 		((Math.Max(entry.Width, RingAlignment) + RingAlignment - 1) & ~(RingAlignment - 1)) / 16;
 
 	private void SetRange(int stage, uint start, uint count, nint* buffers, uint* first, uint* constants) =>
@@ -641,7 +680,7 @@ public unsafe class ConstantBufferReuse: IDisposable
 	private static int HandlePosition(nint buffer) =>
 		(int)(((ulong)buffer * 0x9E3779B97F4A7C15) >> TableShift);
 
-	private Entry? FindEntry(nint buffer)
+	private int FindEntry(nint buffer)
 	{
 		int position = HandlePosition(buffer);
 		while (true)
@@ -651,7 +690,7 @@ public unsafe class ConstantBufferReuse: IDisposable
 				return this.handleEntries[position];
 
 			if (key == 0)
-				return null;
+				return 0;
 
 			position = (position + 1) & (TableSize - 1);
 		}
@@ -671,7 +710,7 @@ public unsafe class ConstantBufferReuse: IDisposable
 		}
 
 		int firstSlot = (stage * ConstantBufferSlots) + (int)start;
-		if (buffers == null || count > MaxBindCount || start + count > ConstantBufferSlots)
+		if (buffers == null || count == 0 || count > MaxBindCount || start + count > ConstantBufferSlots)
 		{
 			if (start < ConstantBufferSlots)
 				Array.Clear(this.boundEntries, firstSlot, (int)Math.Min(count, ConstantBufferSlots - start));
@@ -683,60 +722,70 @@ public unsafe class ConstantBufferReuse: IDisposable
 		nint* ringBuffers = stackalloc nint[MaxBindCount];
 		uint* firsts = stackalloc uint[MaxBindCount];
 		uint* constants = stackalloc uint[MaxBindCount];
-		Entry?[] bound = this.boundEntries;
+		int* indices = stackalloc int[MaxBindCount];
+		int[] bound = this.boundEntries;
 
-		while (true)
+		// One pass: neighbouring slots of the same kind form a run, which is bound in one call as soon as the next slot differs.
+		uint runStart = 0;
+		bool runIsRing = false;
+		uint runGeneration = 0;
+		for (uint i = 0; ; i++)
 		{
-			uint startGeneration = this.ringGeneration;
-			int swapped = 0;
-			for (uint i = 0; i < count; i++)
+			bool isRing = false;
+			if (i < count)
 			{
 				nint buffer = buffers[i];
-				Entry? entry = buffer == this.ring ? this.lastRingEntries[firstSlot + i] : buffer == 0 ? null : this.FindEntry(buffer);
-				if (entry != null && entry.RingGeneration != this.ringGeneration && !this.WriteToRing(context, entry))
+				int index = buffer == this.ring ? this.lastRingEntries[firstSlot + i] : buffer == 0 ? 0 : this.FindEntry(buffer);
+
+				// Marked bound before writing, so a wrap the write causes rebinds this entry rather than whatever the slot held before.
+				bound[firstSlot + i] = index;
+				if (index != 0 && this.entries[index].RingGeneration != this.ringGeneration && !this.WriteToRing(context, ref this.entries[index]))
 				{
 					this.failures++;
-					entry = null;
+					bound[firstSlot + i] = index = 0;
 				}
 
-				bound[firstSlot + i] = entry;
-				if (entry == null)
+				isRing = index != 0;
+				if (isRing)
 				{
-					ringBuffers[i] = buffer;
-					continue;
+					ref Entry entry = ref this.entries[index];
+					this.lastRingEntries[firstSlot + i] = index;
+					indices[i] = index;
+					ringBuffers[i] = this.ring;
+					firsts[i] = entry.RingOffset / 16;
+					constants[i] = ConstantsOf(ref entry);
 				}
-
-				this.lastRingEntries[firstSlot + i] = entry;
-				ringBuffers[i] = this.ring;
-				firsts[i] = entry.RingOffset / 16;
-				constants[i] = ConstantsOf(entry);
-				swapped++;
 			}
 
-			// A wrap while writing moved everything, including offsets already collected above.
-			if (startGeneration != this.ringGeneration)
-				continue;
-
-			if (swapped == 0)
+			if (i == count || (i != runStart && isRing != runIsRing))
 			{
-				hook.Original(context, start, count, buffers);
-			}
-			else if (swapped == count)
-			{
-				this.SetRange(stage, start, count, ringBuffers, firsts, constants);
-			}
-			else
-			{
-				for (uint i = 0; i < count; i++)
+				uint runCount = i - runStart;
+				// A wrap since a ring run began moved its entries. The wrap wrote them again because they're marked bound.
+				if (runCount != 0 && runIsRing && runGeneration != this.ringGeneration)
 				{
-					if (ringBuffers[i] == this.ring)
-						this.SetRange(stage, start + i, 1, ringBuffers + i, firsts + i, constants + i);
-					else
-						hook.Original(context, start + i, 1, buffers + i);
+					for (uint j = runStart; j < i; j++)
+					{
+						ref Entry entry = ref this.entries[indices[j]];
+						firsts[j] = entry.RingOffset / 16;
+						constants[j] = ConstantsOf(ref entry);
+					}
 				}
+
+				if (runCount != 0 && runIsRing)
+					this.SetRange(stage, start + runStart, runCount, ringBuffers + runStart, firsts + runStart, constants + runStart);
+				else if (runCount != 0)
+					hook.Original(context, start + runStart, runCount, buffers + runStart);
+
+				if (i == count)
+					return;
+
+				runStart = i;
 			}
 
-			return;
+			if (i == runStart)
+				runGeneration = this.ringGeneration;
+
+			runIsRing = isRing;
 		}
 	}
 
@@ -749,8 +798,8 @@ public unsafe class ConstantBufferReuse: IDisposable
 
 		// The buffers themselves are left alive on purpose: the game keeps raw pointers to what it bound last and can pass them
 		// to D3D again later. That's a few MB until the game closes, and only if this was turned on.
-		foreach (Entry entry in this.allBuffers)
-			NativeMemory.Free(entry.Contents);
+		foreach (nint chunk in this.contentsChunks)
+			NativeMemory.AlignedFree((void*)chunk);
 
 		GC.SuppressFinalize(this);
 	}
