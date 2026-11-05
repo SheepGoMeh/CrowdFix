@@ -22,6 +22,8 @@ public class CrowdFixConfiguration: IPluginConfiguration
 	public bool GatherUsedCommands = true;
 	public bool DrainJoins = true;
 	public bool InlineSmallJoins = true;
+	public bool ReuseConstantBuffers = true;
+    public bool UseConstantBufferRing = true;
 
 	public void Save() => Service.PluginInterface.SavePluginConfig(this);
 }

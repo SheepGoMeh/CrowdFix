@@ -24,6 +24,7 @@ public class ConfigWindow(
 	CullPerItemClaim cullPerItemClaim,
 	GatherUsedBytes gatherUsedBytes,
 	JoinDrain joinDrain,
+	ConstantBufferReuse constantBufferReuse,
 	Action applySettings)
 	: Window("CrowdFix", ImGuiWindowFlags.AlwaysAutoResize)
 {
@@ -120,6 +121,14 @@ public class ConfigWindow(
 			this.Save();
 		ImGui.EndDisabled();
 		ImGui.TextDisabled(joinDrain.Status);
+
+		ImGui.BeginDisabled(!constantBufferReuse.Available);
+		if (ImGui.Checkbox("Reuse constant buffers within a frame", ref configuration.ReuseConstantBuffers))
+			this.Save();
+		if (configuration.ReuseConstantBuffers && ImGui.Checkbox("Upload through one ring buffer", ref configuration.UseConstantBufferRing))
+			applySettings();
+		ImGui.EndDisabled();
+		ImGui.TextDisabled(constantBufferReuse.Status);
 	}
 
 	private void Save()
